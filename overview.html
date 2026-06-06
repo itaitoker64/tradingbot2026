@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multi-Agent Day Trading Bot — סקירה</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --purple: #a371f7;
+    --orange: #e3b341;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --card: #1c2128;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+    line-height: 1.6;
+  }
+
+  /* ── HERO ── */
+  .hero {
+    background: linear-gradient(135deg, #0d1117 0%, #1a1f2e 50%, #0d1117 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 60px 40px 50px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse 800px 400px at 50% 0%, rgba(88,166,255,0.08) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .hero h1 { font-size: 2.6rem; font-weight: 700; letter-spacing: -0.5px; }
+  .hero h1 span { color: var(--accent); }
+  .hero p { margin-top: 14px; color: var(--muted); font-size: 1.1rem; max-width: 680px; margin-inline: auto; }
+  .badge-row { margin-top: 22px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .badge {
+    padding: 4px 14px; border-radius: 20px; font-size: 0.8rem; font-weight: 600;
+    border: 1px solid;
+  }
+  .badge-blue  { background: rgba(88,166,255,0.1); border-color: rgba(88,166,255,0.4); color: var(--accent); }
+  .badge-green { background: rgba(63,185,80,0.1);  border-color: rgba(63,185,80,0.4);  color: var(--green); }
+  .badge-purple{ background: rgba(163,113,247,0.1);border-color: rgba(163,113,247,0.4);color: var(--purple);}
+  .badge-orange{ background: rgba(227,179,65,0.1); border-color: rgba(227,179,65,0.4); color: var(--orange);}
+
+  /* ── LAYOUT ── */
+  .container { max-width: 1200px; margin: 0 auto; padding: 0 24px 60px; }
+  .section { margin-top: 52px; }
+  .section-title {
+    font-size: 1.3rem; font-weight: 700;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 10px; margin-bottom: 24px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .section-title .icon { font-size: 1.4rem; }
+
+  /* ── CARDS ── */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 22px 24px;
+  }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  @media (max-width: 900px) { .grid-4 { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 700px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; } }
+
+  /* ── AGENT CARDS ── */
+  .agent-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    display: flex; flex-direction: column; gap: 10px;
+    transition: border-color 0.2s;
+  }
+  .agent-card:hover { border-color: var(--accent); }
+  .agent-header { display: flex; align-items: center; gap: 10px; }
+  .agent-icon {
+    width: 42px; height: 42px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.3rem; flex-shrink: 0;
+  }
+  .agent-name { font-weight: 700; font-size: 1rem; }
+  .agent-role { font-size: 0.78rem; color: var(--muted); }
+  .agent-desc { font-size: 0.88rem; color: var(--muted); line-height: 1.5; }
+  .weight-bar-wrap { margin-top: 4px; }
+  .weight-label { font-size: 0.78rem; color: var(--muted); margin-bottom: 4px; display: flex; justify-content: space-between; }
+  .weight-bar { height: 6px; background: var(--border); border-radius: 4px; overflow: hidden; }
+  .weight-fill { height: 100%; border-radius: 4px; }
+  .tag-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tag {
+    font-size: 0.72rem; padding: 2px 9px; border-radius: 4px;
+    background: rgba(88,166,255,0.1); color: var(--accent); border: 1px solid rgba(88,166,255,0.25);
+  }
+
+  /* ── FLOW DIAGRAM ── */
+  .flow {
+    display: flex; align-items: center; gap: 0;
+    overflow-x: auto; padding: 10px 0;
+  }
+  .flow-step {
+    flex-shrink: 0;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    text-align: center;
+    min-width: 130px;
+  }
+  .flow-step .step-num {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: var(--accent); color: var(--bg);
+    font-size: 0.75rem; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center;
+    margin-bottom: 8px;
+  }
+  .flow-step .step-label { font-size: 0.82rem; font-weight: 600; }
+  .flow-step .step-detail { font-size: 0.75rem; color: var(--muted); margin-top: 4px; }
+  .flow-arrow {
+    flex-shrink: 0;
+    font-size: 1.3rem; color: var(--muted); padding: 0 6px;
+  }
+
+  /* ── FILE TREE ── */
+  .file-tree {
+    font-family: "Consolas", "Fira Code", monospace;
+    font-size: 0.85rem;
+    line-height: 1.8;
+  }
+  .file-tree .dir  { color: var(--accent); font-weight: 600; }
+  .file-tree .file { color: var(--text); }
+  .file-tree .comment { color: var(--muted); }
+
+  /* ── SCORE VIZ ── */
+  .score-demo {
+    display: flex; align-items: stretch; gap: 12px;
+  }
+  .score-block {
+    flex: 1; background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 16px;
+  }
+  .score-val {
+    font-size: 2rem; font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+  .score-sublabel { font-size: 0.78rem; color: var(--muted); }
+  .decision-box {
+    flex: 1.2; border-radius: 8px; padding: 14px 16px;
+    display: flex; flex-direction: column; justify-content: center; align-items: center;
+    font-size: 1.6rem; font-weight: 800; border: 2px solid;
+  }
+  .long-box  { background: rgba(63,185,80,0.1);  border-color: var(--green); color: var(--green); }
+  .short-box { background: rgba(248,81,73,0.1);  border-color: var(--red);   color: var(--red); }
+  .pass-box  { background: rgba(139,148,158,0.1);border-color: var(--muted); color: var(--muted); }
+
+  /* ── RISK PARAMS ── */
+  .param-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 0.9rem;
+  }
+  .param-row:last-child { border-bottom: none; }
+  .param-key { color: var(--muted); }
+  .param-val { font-family: monospace; font-weight: 600; color: var(--accent); }
+
+  /* ── BROKER TABLE ── */
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th { background: var(--surface); color: var(--muted); font-weight: 600;
+       text-align: right; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  tr:last-child td { border-bottom: none; }
+
+  /* ── DISCLAIMER ── */
+  .disclaimer {
+    margin-top: 52px;
+    background: rgba(248,81,73,0.05);
+    border: 1px solid rgba(248,81,73,0.3);
+    border-radius: 10px; padding: 18px 22px;
+    font-size: 0.85rem; color: var(--muted);
+  }
+  .disclaimer strong { color: var(--red); }
+
+  /* ── QUICK START ── */
+  pre {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px 20px;
+    font-size: 0.85rem; line-height: 1.7;
+    overflow-x: auto;
+  }
+  .kw   { color: #ff7b72; }
+  .str  { color: #a5d6ff; }
+  .cmt  { color: var(--muted); }
+  .env  { color: var(--orange); }
+
+  /* ── THRESHOLD BAND ── */
+  .band-wrap { position: relative; height: 50px; border-radius: 8px; overflow: hidden; margin-top: 8px; }
+  .band-short { position: absolute; left: 0; width: 40%; height: 100%; background: rgba(248,81,73,0.25); }
+  .band-pass  { position: absolute; left: 40%; width: 20%; height: 100%; background: rgba(139,148,158,0.15); }
+  .band-long  { position: absolute; left: 60%; right: 0; height: 100%; background: rgba(63,185,80,0.25); }
+  .band-label {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    font-size: 0.8rem; font-weight: 700; pointer-events: none;
+  }
+  .band-label.short { left: 17%; color: var(--red); }
+  .band-label.pass  { left: 47%; color: var(--muted); }
+  .band-label.long  { left: 72%; color: var(--green); }
+  .band-tick {
+    position: absolute; bottom: 0;
+    font-size: 0.7rem; color: var(--muted);
+    transform: translateX(-50%);
+  }
+  .tick-line { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--border); }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ HERO ═══════════════ -->
+<div class="hero">
+  <h1>Multi-Agent <span>Day Trading Bot</span></h1>
+  <p>מערכת מסחר אוטונומית מבוססת חמישה סוכנים — כל אחד מחשב ציון אמון [1–100], ומנהל תיק מאחד אותם להחלטה אחת.</p>
+  <div class="badge-row">
+    <span class="badge badge-blue">Python asyncio</span>
+    <span class="badge badge-green">Alpaca (paper)</span>
+    <span class="badge badge-green">IBKR (live)</span>
+    <span class="badge badge-purple">Claude (LLM)</span>
+    <span class="badge badge-orange">Multi-Agent MAS</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- ═══════════════ FLOW ═══════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">🔄</span> זרימת החלטה</div>
+    <div class="card" style="overflow-x:auto; padding: 24px 20px;">
+      <div class="flow">
+        <div class="flow-step">
+          <div class="step-num">1</div>
+          <div class="step-label">AnalysisContext</div>
+          <div class="step-detail">200 בארים + חשבון + תרשים PNG</div>
+        </div>
+        <div class="flow-arrow">›</div>
+        <div class="flow-step" style="border-color: var(--purple);">
+          <div class="step-num" style="background:var(--purple);">2</div>
+          <div class="step-label">4 סוכנים במקביל</div>
+          <div class="step-detail">asyncio.gather</div>
+        </div>
+        <div class="flow-arrow">›</div>
+        <div class="flow-step">
+          <div class="step-num">3</div>
+          <div class="step-label">Composite Score</div>
+          <div class="step-detail">ממוצע משוקלל [1–100]</div>
+        </div>
+        <div class="flow-arrow">›</div>
+        <div class="flow-step">
+          <div class="step-num">4</div>
+          <div class="step-label">סף החלטה</div>
+          <div class="step-detail">LONG / SHORT / PASS</div>
+        </div>
+        <div class="flow-arrow">›</div>
+        <div class="flow-step" style="border-color: var(--red);">
+          <div class="step-num" style="background:var(--red);">5</div>
+          <div class="step-label">Risk Veto</div>
+          <div class="step-detail">כבאי — מבטל אם סיכון גבוה</div>
+        </div>
+        <div class="flow-arrow">›</div>
+        <div class="flow-step">
+          <div class="step-num">6</div>
+          <div class="step-label">תכנית ATR</div>
+          <div class="step-detail">כמות + SL + TP + R/R</div>
+        </div>
+        <div class="flow-arrow">›</div>
+        <div class="flow-step" style="border-color: var(--green);">
+          <div class="step-num" style="background:var(--green); color:#0d1117;">7</div>
+          <div class="step-label">Bracket Order</div>
+          <div class="step-detail">שליחה לברוקר</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ AGENTS ═══════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">🤖</span> הסוכנים</div>
+    <div class="grid-4">
+
+      <!-- Fundamental -->
+      <div class="agent-card">
+        <div class="agent-header">
+          <div class="agent-icon" style="background:rgba(88,166,255,0.15);">📰</div>
+          <div>
+            <div class="agent-name">Fundamental</div>
+            <div class="agent-role">סנטימנט & חדשות</div>
+          </div>
+        </div>
+        <div class="agent-desc">קורא כותרות חדשות ומחשב ציון סנטימנט. כאשר מפתח Anthropic קיים — משתמש ב-Claude לניתוח עמוק. אחרת — ניתוח לקסיקלי.</div>
+        <div class="weight-bar-wrap">
+          <div class="weight-label"><span>משקל</span><span style="color:var(--accent)">30%</span></div>
+          <div class="weight-bar"><div class="weight-fill" style="width:30%; background:var(--accent);"></div></div>
+        </div>
+        <div class="tag-list">
+          <span class="tag">Claude LLM</span><span class="tag">Alpaca News</span><span class="tag">PoliStock stub</span>
+        </div>
+      </div>
+
+      <!-- Vision -->
+      <div class="agent-card">
+        <div class="agent-header">
+          <div class="agent-icon" style="background:rgba(163,113,247,0.15);">👁️</div>
+          <div>
+            <div class="agent-name">Vision</div>
+            <div class="agent-role">זיהוי תבניות תרשים</div>
+          </div>
+        </div>
+        <div class="agent-desc">מקבל תרשים OHLCV כתמונת PNG ומבקש מ-Claude Vision לזהות תבניות טכניות: ראש-כתפיים, משולשים, נרות וכו'.</div>
+        <div class="weight-bar-wrap">
+          <div class="weight-label"><span>משקל</span><span style="color:var(--purple)">20%</span></div>
+          <div class="weight-bar"><div class="weight-fill" style="width:20%; background:var(--purple);"></div></div>
+        </div>
+        <div class="tag-list">
+          <span class="tag" style="color:var(--purple); border-color:rgba(163,113,247,0.3);">VLM</span>
+          <span class="tag" style="color:var(--purple); border-color:rgba(163,113,247,0.3);">PNG chart</span>
+        </div>
+      </div>
+
+      <!-- Technical -->
+      <div class="agent-card">
+        <div class="agent-header">
+          <div class="agent-icon" style="background:rgba(63,185,80,0.15);">📊</div>
+          <div>
+            <div class="agent-name">Technical</div>
+            <div class="agent-role">אינדיקטורים קוונטיים</div>
+          </div>
+        </div>
+        <div class="agent-desc">מחשב RSI, MACD, EMA ו-VWAP מהבארים ומחזיר ציון לפי כמה אינדיקטורים "מסכימים" עם הכיוון.</div>
+        <div class="weight-bar-wrap">
+          <div class="weight-label"><span>משקל</span><span style="color:var(--green)">50%</span></div>
+          <div class="weight-bar"><div class="weight-fill" style="width:50%; background:var(--green);"></div></div>
+        </div>
+        <div class="tag-list">
+          <span class="tag" style="color:var(--green); border-color:rgba(63,185,80,0.3);">RSI</span>
+          <span class="tag" style="color:var(--green); border-color:rgba(63,185,80,0.3);">MACD</span>
+          <span class="tag" style="color:var(--green); border-color:rgba(63,185,80,0.3);">EMA</span>
+          <span class="tag" style="color:var(--green); border-color:rgba(63,185,80,0.3);">VWAP</span>
+        </div>
+      </div>
+
+      <!-- Risk -->
+      <div class="agent-card" style="border-color: rgba(248,81,73,0.35);">
+        <div class="agent-header">
+          <div class="agent-icon" style="background:rgba(248,81,73,0.15);">🛑</div>
+          <div>
+            <div class="agent-name">Risk</div>
+            <div class="agent-role">שוטר — VETO + תכנון</div>
+          </div>
+        </div>
+        <div class="agent-desc">לא משתתף בציון הקומפוזיטי. מחזיק זכות <strong style="color:var(--red)">וטו מוחלט</strong>. אם אישר — בונה תכנית ATR מפורטת עם כמות, SL ו-TP.</div>
+        <div class="weight-bar-wrap">
+          <div class="weight-label"><span>משקל בקומפוזיט</span><span style="color:var(--red)">0% (VETO)</span></div>
+          <div class="weight-bar"><div class="weight-fill" style="width:0%; background:var(--red);"></div></div>
+        </div>
+        <div class="tag-list">
+          <span class="tag" style="color:var(--red); border-color:rgba(248,81,73,0.3);">ATR sizing</span>
+          <span class="tag" style="color:var(--red); border-color:rgba(248,81,73,0.3);">SL / TP</span>
+          <span class="tag" style="color:var(--red); border-color:rgba(248,81,73,0.3);">R/R check</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ SCORE VISUAL ═══════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">🎯</span> סף ההחלטה</div>
+    <div class="card">
+      <p style="font-size:0.9rem; color:var(--muted); margin-bottom:16px;">ציון קומפוזיטי [1–100] ממופה לשלוש תוצאות. ניתן לשנות את הסף דרך משתני סביבה.</p>
+      <div class="band-wrap">
+        <div class="band-short"></div>
+        <div class="band-pass"></div>
+        <div class="band-long"></div>
+        <div class="tick-line" style="left:40%;"></div>
+        <div class="tick-line" style="left:60%;"></div>
+        <div class="band-label short">SHORT<br><small>≤ 40</small></div>
+        <div class="band-label pass">PASS<br><small>40–60</small></div>
+        <div class="band-label long">LONG<br><small>≥ 60</small></div>
+        <div class="band-tick" style="left:40%;">40</div>
+        <div class="band-tick" style="left:60%;">60</div>
+      </div>
+      <div class="score-demo" style="margin-top:16px;">
+        <div class="score-block">
+          <div class="score-val" style="color:var(--red);">31</div>
+          <div class="score-sublabel">Fundamental • Technical • Vision</div>
+          <div class="decision-box short-box" style="margin-top:10px; padding: 8px; font-size:1rem;">SHORT ↓</div>
+        </div>
+        <div class="score-block">
+          <div class="score-val" style="color:var(--muted);">52</div>
+          <div class="score-sublabel">אין הסכמה</div>
+          <div class="decision-box pass-box" style="margin-top:10px; padding: 8px; font-size:1rem;">PASS —</div>
+        </div>
+        <div class="score-block">
+          <div class="score-val" style="color:var(--green);">74</div>
+          <div class="score-sublabel">Bullish consensus</div>
+          <div class="decision-box long-box" style="margin-top:10px; padding: 8px; font-size:1rem;">LONG ↑</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ RISK PARAMS ═══════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">⚙️</span> פרמטרי סיכון ברירת מחדל</div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="param-row"><span class="param-key">MAX_RISK_PER_TRADE_PCT</span><span class="param-val">1% מהחשבון</span></div>
+        <div class="param-row"><span class="param-key">MIN_RISK_REWARD</span><span class="param-val">1.5 R/R</span></div>
+        <div class="param-row"><span class="param-key">MAX_POSITION_PCT</span><span class="param-val">20% מהחשבון</span></div>
+        <div class="param-row"><span class="param-key">ATR_STOP_MULTIPLE</span><span class="param-val">ATR × 2 (Stop-Loss)</span></div>
+        <div class="param-row"><span class="param-key">ATR_TARGET_MULTIPLE</span><span class="param-val">ATR × 3 (Take-Profit)</span></div>
+      </div>
+      <div class="card">
+        <div class="param-row"><span class="param-key">LONG_THRESHOLD</span><span class="param-val">&gt; 60</span></div>
+        <div class="param-row"><span class="param-key">SHORT_THRESHOLD</span><span class="param-val">&lt; 40</span></div>
+        <div class="param-row"><span class="param-key">MIN_RISK_SCORE</span><span class="param-val">&gt; 35</span></div>
+        <div class="param-row"><span class="param-key">LLM_MODEL</span><span class="param-val">claude-3-5-sonnet-latest</span></div>
+        <div class="param-row"><span class="param-key">RUN_MODE</span><span class="param-val">backtest / paper / live</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ BROKERS ═══════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">🏦</span> ברוקרים נתמכים</div>
+    <div class="card" style="padding:0; overflow:hidden;">
+      <table>
+        <thead>
+          <tr>
+            <th>ברוקר</th>
+            <th>מצב</th>
+            <th>SDK</th>
+            <th>שימוש</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong style="color:var(--accent)">Alpaca</strong></td>
+            <td><span class="badge badge-green">backtest / paper</span></td>
+            <td style="font-family:monospace; color:var(--orange);">alpaca-py</td>
+            <td>נתוני היסטוריה + מסחר paper</td>
+          </tr>
+          <tr>
+            <td><strong style="color:var(--purple)">IBKR</strong></td>
+            <td><span class="badge badge-purple">live</span></td>
+            <td style="font-family:monospace; color:var(--orange);">ib_insync</td>
+            <td>מסחר חי בכסף אמיתי</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══════════════ FILE TREE ═══════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">📁</span> מבנה קבצים</div>
+    <div class="card">
+      <div class="file-tree">
+        <div><span class="dir">trading_bot/</span></div>
+        <div>&nbsp;&nbsp;├── <span class="file">main.py</span> <span class="comment">— composition root + run loops</span></div>
+        <div>&nbsp;&nbsp;├── <span class="file">requirements.txt</span></div>
+        <div>&nbsp;&nbsp;├── <span class="file">.env.example</span></div>
+        <div>&nbsp;&nbsp;├── <span class="dir">config/</span></div>
+        <div>&nbsp;&nbsp;│&nbsp;&nbsp; └── <span class="file">settings.py</span> <span class="comment">— Settings מבוסס env, weights, risk, thresholds</span></div>
+        <div>&nbsp;&nbsp;├── <span class="dir">core/</span></div>
+        <div>&nbsp;&nbsp;│&nbsp;&nbsp; ├── <span class="file">enums.py</span> <span class="comment">— Decision, OrderSide, AgentRole, RunMode</span></div>
+        <div>&nbsp;&nbsp;│&nbsp;&nbsp; ├── <span class="file">models.py</span> <span class="comment">— AnalysisContext, AgentEvaluation, TradeDecision</span></div>
+        <div>&nbsp;&nbsp;│&nbsp;&nbsp; └── <span class="file">base_agent.py</span> <span class="comment">— BaseAgent ABC → get_score(ctx) → int</span></div>
+        <div>&nbsp;&nbsp;├── <span class="dir">data/</span></div>
+        <div>&nbsp;&nbsp;│&nbsp;&nbsp; ├── <span class="file">news_sources.py</span> <span class="comment">— NewsSource ABC + PoliStock stub + Alpaca</span></div>
+        <div>&nbsp;&nbsp;│&nbsp;&nbsp; └── <span class="file">chart_renderer.py</span> <span class="comment">— OHLCV → PNG לסוכן Vision</span></div>
+        <div>&nbsp;&nbsp;├── <span class="dir">agents/</span></div>
+        <div>&nbsp;&nbsp;│&nbsp;&nbsp; ├── <span class="file">fundamental_agent.py</span></div>
+        <div>&nbsp;&nbsp;│&nbsp;&nbsp; ├── <span class="file">vision_agent.py</span></div>
+        <div>&nbsp;&nbsp;│&nbsp;&nbsp; ├── <span class="file">technical_agent.py</span></div>
+        <div>&nbsp;&nbsp;│&nbsp;&nbsp; └── <span class="file">risk_agent.py</span></div>
+        <div>&nbsp;&nbsp;└── <span class="dir">execution/</span></div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ├── <span class="file">base_broker.py</span></div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ├── <span class="file">alpaca_broker.py</span></div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ├── <span class="file">ibkr_broker.py</span></div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; └── <span class="file">portfolio_manager.py</span> <span class="comment">— orchestrator</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════ QUICK START ═══════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">🚀</span> הרצה מהירה</div>
+    <pre><span class="cmt"># 1. סביבה וירטואלית</span>
+python -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -r requirements.txt
+
+<span class="cmt"># 2. הגדרות</span>
+cp .env.example .env      <span class="cmt"># מלא מפתחות API</span>
+
+<span class="cmt"># 3. Backtest על AAPL + MSFT</span>
+<span class="env">RUN_MODE</span>=backtest python main.py AAPL MSFT
+
+<span class="cmt"># 4. Paper trading (בלי כסף אמיתי)</span>
+<span class="env">RUN_MODE</span>=paper python main.py AAPL
+
+<span class="cmt"># 5. Live — רק לאחר בדיקות מקיפות!</span>
+<span class="env">RUN_MODE</span>=live <span class="env">EXECUTE_LIVE</span>=true python main.py AAPL</pre>
+  </div>
+
+  <!-- ═══════════════ SAFE EVALUATE NOTE ═══════════════ -->
+  <div class="section">
+    <div class="section-title"><span class="icon">🛡️</span> חוסן שגיאות</div>
+    <div class="card">
+      <p style="font-size:0.92rem;">כל סוכן עטוף ב-<code style="background:var(--surface); padding:2px 6px; border-radius:4px; color:var(--accent);">safe_evaluate()</code> — אם סוכן זורק חריגה (רשת, timeout, API), הוא <strong>מדורג ל-50 (נייטרל)</strong> ומתועד ב-log, במקום לקרוס את כל ה-desk. הבוט ממשיך לפעול עם הסוכנים הזמינים.</p>
+    </div>
+  </div>
+
+  <!-- ═══════════════ DISCLAIMER ═══════════════ -->
+  <div class="disclaimer">
+    <strong>⚠️ אזהרה:</strong> זהו scaffold הנדסי בלבד — לא עצה פיננסית ולא מערכת רווחית מוכחת. המחבר אינו יועץ ההשקעות שלך. הרץ backtest מקיף, הבן כל שורת קוד, ולעולם אל תפעיל הון חי שאינך יכול להרשות לעצמך להפסיד.
+  </div>
+
+</div><!-- /container -->
+</body>
+</html>
