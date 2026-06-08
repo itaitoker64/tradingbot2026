@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import './globals.css'
-import { Sidebar } from '@/components/layout/Sidebar'
+import { Sidebar, MobileNav } from '@/components/layout/Sidebar'
 import { Toaster } from 'sonner'
 
 export const metadata: Metadata = {
@@ -17,9 +17,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className="dark">
       <body className="flex h-dvh overflow-hidden bg-bg-base text-primary">
         <Sidebar />
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 overflow-y-auto pb-16 md:pb-0">
           {children}
         </main>
+        <MobileNav />
         <Toaster
           theme="dark"
           toastOptions={{

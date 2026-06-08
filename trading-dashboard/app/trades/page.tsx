@@ -166,45 +166,30 @@ export default function TradesPage() {
     .filter(t => filter === 'all' || t.direction === filter)
 
   return (
-    <div className="px-6 py-6 space-y-6 max-w-[1400px]">
+    <div className="px-4 py-4 md:px-6 md:py-6 space-y-4 md:space-y-6 max-w-[1400px]">
 
-      <div className="flex items-center justify-between">
+      {/* Header — stacks on mobile */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl font-bold text-primary">Trade Recommendations</h1>
+          <h1 className="text-lg md:text-xl font-bold text-primary">Trade Recommendations</h1>
           <p className="text-xs text-muted mt-0.5">
-            {active.length} signals &middot; sorted by win probability
+            {active.length} signals
             {lastFetch && ` · ${lastFetch.toLocaleTimeString()}`}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {live
             ? <span className="flex items-center gap-1.5 text-xs text-bull"><Wifi className="h-3 w-3" /> Live</span>
             : <span className="flex items-center gap-1.5 text-xs text-caution"><WifiOff className="h-3 w-3" /> Demo</span>
           }
-          {active.length > 0 && (
-            <button
-              onClick={handleBuyAll}
-              disabled={buyingAll}
-              className={cn(
-                'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all',
-                'bg-brand-cyan/15 border border-brand-cyan/30 text-brand-cyan hover:bg-brand-cyan/25',
-                'disabled:opacity-50 disabled:cursor-not-allowed',
-              )}
-            >
-              {buyingAll
-                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                : <ShoppingCart className="h-3.5 w-3.5" />
-              }
-              {buyingAll ? 'Buying...' : `Buy All (${active.length})`}
-            </button>
-          )}
+          {/* Filter pills */}
           <div className="flex items-center gap-1 rounded-lg border border-bg-border p-0.5">
             {(['all', 'LONG', 'SHORT'] as const).map(f => (
               <button
                 key={f}
                 onClick={() => setFilter(f)}
                 className={cn(
-                  'rounded-md px-3 py-1 text-xs font-medium transition-all',
+                  'rounded-md px-2.5 py-1 text-xs font-medium transition-all',
                   filter === f
                     ? f === 'LONG'  ? 'bg-bull/15 text-bull'
                     : f === 'SHORT' ? 'bg-bear/15 text-bear'
@@ -216,9 +201,22 @@ export default function TradesPage() {
               </button>
             ))}
           </div>
+          {active.length > 0 && (
+            <button
+              onClick={handleBuyAll}
+              disabled={buyingAll}
+              className={cn(
+                'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all',
+                'bg-brand-cyan/15 border border-brand-cyan/30 text-brand-cyan hover:bg-brand-cyan/25',
+                'disabled:opacity-50 disabled:cursor-not-allowed',
+              )}
+            >
+              {buyingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShoppingCart className="h-3.5 w-3.5" />}
+              {buyingAll ? 'Buying...' : `Buy All (${active.length})`}
+            </button>
+          )}
           <button onClick={fetchData} className="btn-ghost text-xs" disabled={loading}>
             <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
-            Refresh
           </button>
         </div>
       </div>

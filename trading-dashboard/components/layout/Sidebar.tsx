@@ -15,10 +15,46 @@ const nav = [
   { href: '/backtest',  icon: FlaskConical,    label: 'Backtest'   },
 ]
 
+/** Bottom tab bar shown only on mobile (< md breakpoint) */
+export function MobileNav() {
+  const path = usePathname()
+  return (
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 flex items-center justify-around
+                    border-t border-bg-border bg-bg-card/95 backdrop-blur-sm px-2 pb-safe">
+      {nav.map(({ href, icon: Icon, label }) => {
+        const active = href === '/' ? path === '/' : path.startsWith(href)
+        return (
+          <Link
+            key={href}
+            href={href}
+            className={cn(
+              'flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg text-[10px] font-medium transition-colors min-w-0',
+              active ? 'text-brand-cyan' : 'text-muted hover:text-primary',
+            )}
+          >
+            <Icon className="h-5 w-5 shrink-0" />
+            <span className="truncate">{label}</span>
+          </Link>
+        )
+      })}
+      <Link
+        href="/settings"
+        className={cn(
+          'flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg text-[10px] font-medium transition-colors min-w-0',
+          path === '/settings' ? 'text-brand-cyan' : 'text-muted hover:text-primary',
+        )}
+      >
+        <Settings className="h-5 w-5 shrink-0" />
+        <span>Settings</span>
+      </Link>
+    </nav>
+  )
+}
+
 export function Sidebar() {
   const path = usePathname()
   return (
-    <aside className="flex w-[220px] flex-col border-r border-bg-border bg-bg-card shrink-0">
+    <aside className="hidden md:flex w-[220px] flex-col border-r border-bg-border bg-bg-card shrink-0">
       {/* Logo */}
       <div className="flex items-center gap-2.5 px-5 py-5 border-b border-bg-border">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-cyan/10 border border-brand-cyan/30">

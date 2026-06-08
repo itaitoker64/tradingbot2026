@@ -50,18 +50,18 @@ export default async function DashboardPage() {
   const { stats, account, pnl, regime, sectors, positions, live } = await loadDashboard()
 
   return (
-    <div className="px-6 py-6 space-y-6 max-w-[1400px]">
+    <div className="px-4 py-4 md:px-6 md:py-6 space-y-4 md:space-y-6 max-w-[1400px]">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-primary">Dashboard</h1>
-          <p className="text-xs text-muted mt-0.5">
+          <h1 className="text-lg md:text-xl font-bold text-primary">Dashboard</h1>
+          <p className="text-xs text-muted mt-0.5 hidden sm:block">
             {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
           </p>
         </div>
         <div className="flex items-center gap-2">
           {live
             ? <span className="flex items-center gap-1.5 text-xs text-bull"><span className="h-1.5 w-1.5 rounded-full bg-bull animate-pulse-slow" />Live</span>
-            : <span className="flex items-center gap-1.5 text-xs text-caution"><span className="h-1.5 w-1.5 rounded-full bg-caution" />Demo data</span>
+            : <span className="flex items-center gap-1.5 text-xs text-caution"><span className="h-1.5 w-1.5 rounded-full bg-caution" />Demo</span>
           }
           <RefreshButton />
         </div>

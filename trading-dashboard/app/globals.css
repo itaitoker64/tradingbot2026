@@ -88,3 +88,8 @@
 .recharts-tooltip-wrapper {
   outline: none !important;
 }
+
+/* iPhone safe-area bottom padding for mobile nav */
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}

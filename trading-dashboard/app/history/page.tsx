@@ -48,7 +48,7 @@ export default async function HistoryPage() {
   const { trades, live } = await loadHistory()
 
   return (
-    <div className="px-6 py-6 space-y-6 max-w-[1400px]">
+    <div className="px-4 py-4 md:px-6 md:py-6 space-y-4 md:space-y-6 max-w-[1400px]">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-primary">Trade History</h1>

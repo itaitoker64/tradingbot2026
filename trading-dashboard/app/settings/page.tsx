@@ -144,7 +144,7 @@ export default function SettingsPage() {
   ]
 
   return (
-    <div className="px-6 py-6 space-y-6 max-w-[900px]">
+    <div className="px-4 py-4 md:px-6 md:py-6 space-y-4 md:space-y-6 max-w-[900px]">
       <div>
         <h1 className="text-xl font-bold text-primary">Settings</h1>
         <p className="text-xs text-muted mt-0.5">Connection status and configuration</p>

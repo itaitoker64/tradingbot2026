@@ -10,21 +10,20 @@ interface Props {
 export function AccountBar({ account }: Props) {
   if (!account) {
     return (
-      <div className="card px-5 py-3 flex items-center gap-2 text-xs text-muted animate-pulse-slow">
+      <div className="card px-4 py-3 flex items-center gap-2 text-xs text-muted animate-pulse-slow">
         <Wallet className="h-3.5 w-3.5" />
         <span>Account data unavailable — check Alpaca API credentials</span>
       </div>
     )
   }
 
-  const equity       = parseFloat(account.equity)
-  const buyingPower  = parseFloat(account.buying_power)
-  const cash         = parseFloat(account.cash)
-  const todayPnl     = equity - parseFloat(account.last_equity)
-  const todayPnlPct  = parseFloat(account.last_equity) > 0
+  const equity      = parseFloat(account.equity)
+  const buyingPower = parseFloat(account.buying_power)
+  const cash        = parseFloat(account.cash)
+  const todayPnl    = equity - parseFloat(account.last_equity)
+  const todayPnlPct = parseFloat(account.last_equity) > 0
     ? (todayPnl / parseFloat(account.last_equity)) * 100
     : 0
-
   const isUp = todayPnl >= 0
 
   const items = [
@@ -34,6 +33,7 @@ export function AccountBar({ account }: Props) {
       icon:  Wallet,
       cls:   'text-brand-cyan',
       bg:    'bg-brand-cyan/10',
+      mobileHide: false,
     },
     {
       label: "Today's P&L",
@@ -41,6 +41,7 @@ export function AccountBar({ account }: Props) {
       icon:  isUp ? TrendingUp : TrendingDown,
       cls:   isUp ? 'text-bull' : 'text-bear',
       bg:    isUp ? 'bg-bull/10' : 'bg-bear/10',
+      mobileHide: false,
     },
     {
       label: 'Buying Power',
@@ -48,6 +49,7 @@ export function AccountBar({ account }: Props) {
       icon:  DollarSign,
       cls:   'text-caution',
       bg:    'bg-caution/10',
+      mobileHide: true,
     },
     {
       label: 'Cash',
@@ -55,18 +57,20 @@ export function AccountBar({ account }: Props) {
       icon:  DollarSign,
       cls:   'text-subtle',
       bg:    'bg-bg-elevated',
+      mobileHide: true,
     },
   ]
 
   return (
-    <div className="card px-5 py-3 flex flex-wrap items-center gap-4 sm:gap-6">
+    <div className="card px-4 py-3 flex flex-wrap items-center gap-3 md:gap-6">
       {/* Paper badge */}
       <span className="rounded-full border border-caution/30 bg-caution/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-caution">
         Paper
       </span>
 
+      {/* Show all on desktop; only first 2 on mobile */}
       {items.map((item) => (
-        <div key={item.label} className="flex items-center gap-2">
+        <div key={item.label} className={cn('flex items-center gap-2', item.mobileHide && 'hidden sm:flex')}>
           <div className={cn('flex h-7 w-7 items-center justify-center rounded-lg', item.bg)}>
             <item.icon className={cn('h-3.5 w-3.5', item.cls)} />
           </div>
@@ -79,10 +83,10 @@ export function AccountBar({ account }: Props) {
 
       {/* Day-trade count */}
       <div className="ml-auto text-right">
-        <p className="text-[10px] text-muted">Day Trades Used</p>
-        <p className="text-xs font-mono font-bold text-primary">{account.daytrade_count} / 3</p>
+        <p className="text-[10px] text-muted">Day Trades</p>
+        <p className="text-xs font-mono font-bold text-primary">{account.daytrade_count}/3</p>
         {account.pattern_day_trader && (
-          <p className="text-[9px] text-bull">PDT Account</p>
+          <p className="text-[9px] text-bull hidden sm:block">PDT Account</p>
         )}
       </div>
     </div>
