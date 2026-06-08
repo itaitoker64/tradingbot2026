@@ -6,6 +6,10 @@ import { Toaster } from 'sonner'
 export const metadata: Metadata = {
   title: 'Trading Bot Dashboard',
   description: 'AI-powered multi-agent trading intelligence',
+  icons: {
+    icon: '/favicon.svg',
+    shortcut: '/favicon.svg',
+  },
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

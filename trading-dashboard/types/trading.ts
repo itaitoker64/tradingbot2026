@@ -4,8 +4,8 @@ export type Decision  = 'LONG' | 'SHORT' | 'PASS'
 
 export interface AgentEvaluation {
   role:       string
-  score:      number   // 1–100
-  confidence: number   // 0–1
+  score:      number   // 1-100
+  confidence: number   // 0-1
   rationale?: string
 }
 
@@ -19,16 +19,18 @@ export interface RiskPlan {
 }
 
 export interface TradeRecommendation {
-  id:              string
-  ticker:          string
-  direction:       Direction
-  composite_score: number
-  risk:            RiskPlan
-  regime:          Regime
-  sector:          string
-  hot_sector:      boolean
-  evaluations:     AgentEvaluation[]
-  timestamp:       string
+  id:                   string
+  ticker:               string
+  direction:            Direction
+  composite_score:      number
+  risk:                 RiskPlan
+  regime:               Regime
+  sector:               string
+  hot_sector:           boolean
+  evaluations:          AgentEvaluation[]
+  timestamp:            string
+  expires_at?:          string
+  time_window_minutes?: number
 }
 
 export interface TradeRecord {
@@ -89,6 +91,7 @@ export interface ExecuteRequest {
   entry:             number
   stop_loss:         number
   take_profit:       number
+  composite_score?:  number
 }
 
 export interface ExecuteResponse {

@@ -21,19 +21,21 @@ export function ConfirmModal({ trade, onClose, onDone }: Props) {
   const isLong = trade.direction === 'LONG'
 
   async function handleExecute() {
+    if (!trade) return
     setLoading(true)
     try {
       const res = await api.execute({
         recommendation_id: trade.id,
-        ticker:      trade.ticker,
-        direction:   trade.direction,
-        qty:         trade.risk.qty,
-        entry:       trade.risk.entry,
-        stop_loss:   trade.risk.stop_loss,
-        take_profit: trade.risk.take_profit,
+        ticker:          trade.ticker,
+        direction:       trade.direction,
+        qty:             trade.risk.qty,
+        entry:           trade.risk.entry,
+        stop_loss:       trade.risk.stop_loss,
+        take_profit:     trade.risk.take_profit,
+        composite_score: trade.composite_score,
       })
       setConfirmed(true)
-      toast.success(`Trade executed: ${trade.direction} ${trade.risk.qty}× ${trade.ticker}`, {
+      toast.success(`Trade executed: ${trade.direction} ${trade.risk.qty}x ${trade.ticker}`, {
         description: `Order ID: ${res.order_id}`,
       })
       setTimeout(() => { onDone(); onClose() }, 1500)
@@ -46,6 +48,7 @@ export function ConfirmModal({ trade, onClose, onDone }: Props) {
 
   const dirColor = isLong ? 'text-bull' : 'text-bear'
   const dirBg    = isLong ? 'border-bull/30' : 'border-bear/30'
+  const totalCost = trade.risk.qty * trade.risk.entry
 
   return (
     <div
@@ -54,23 +57,13 @@ export function ConfirmModal({ trade, onClose, onDone }: Props) {
       onClick={e => { if (e.target === e.currentTarget) onClose() }}
     >
       <div
-        className={cn(
-          'w-full max-w-md rounded-2xl border bg-bg-card shadow-2xl animate-slide-up',
-          dirBg,
-        )}
+        className={cn('w-full max-w-md rounded-2xl border bg-bg-card shadow-2xl animate-slide-up', dirBg)}
         onClick={e => e.stopPropagation()}
       >
-        {/* Header */}
         <div className="flex items-center justify-between border-b border-bg-border px-6 py-4">
           <div className="flex items-center gap-3">
-            <div className={cn(
-              'flex h-9 w-9 items-center justify-center rounded-lg',
-              isLong ? 'bg-bull/15' : 'bg-bear/15',
-            )}>
-              {isLong
-                ? <ArrowUpRight className="h-5 w-5 text-bull" />
-                : <ArrowDownLeft className="h-5 w-5 text-bear" />
-              }
+            <div className={cn('flex h-9 w-9 items-center justify-center rounded-lg', isLong ? 'bg-bull/15' : 'bg-bear/15')}>
+              {isLong ? <ArrowUpRight className="h-5 w-5 text-bull" /> : <ArrowDownLeft className="h-5 w-5 text-bear" />}
             </div>
             <div>
               <h2 className="text-sm font-semibold text-primary">Confirm Trade</h2>
@@ -82,9 +75,7 @@ export function ConfirmModal({ trade, onClose, onDone }: Props) {
           </button>
         </div>
 
-        {/* Trade Details */}
         <div className="px-6 py-4 space-y-4">
-          {/* Direction + ticker */}
           <div className="flex items-center justify-between rounded-xl bg-bg-base px-4 py-3">
             <div>
               <span className={cn('ticker-mono text-2xl', dirColor)}>{trade.ticker}</span>
@@ -96,12 +87,11 @@ export function ConfirmModal({ trade, onClose, onDone }: Props) {
             </div>
           </div>
 
-          {/* Prices grid */}
           <div className="grid grid-cols-3 gap-2">
             {[
-              { label: 'Entry',   value: formatPrice(trade.risk.entry),       cls: 'text-primary' },
-              { label: 'Stop',    value: formatPrice(trade.risk.stop_loss),    cls: 'text-bear'    },
-              { label: 'Target',  value: formatPrice(trade.risk.take_profit),  cls: 'text-bull'    },
+              { label: 'Entry',  value: formatPrice(trade.risk.entry),      cls: 'text-primary' },
+              { label: 'Stop',   value: formatPrice(trade.risk.stop_loss),  cls: 'text-bear'    },
+              { label: 'Target', value: formatPrice(trade.risk.take_profit),cls: 'text-bull'    },
             ].map(({ label, value, cls }) => (
               <div key={label} className="rounded-lg bg-bg-base p-3 text-center">
                 <p className="text-[10px] text-muted mb-1">{label}</p>
@@ -110,11 +100,16 @@ export function ConfirmModal({ trade, onClose, onDone }: Props) {
             ))}
           </div>
 
-          {/* Stats row */}
-          <div className="grid grid-cols-3 gap-2 text-center text-xs">
+          <div className="grid grid-cols-2 gap-2 text-center text-xs sm:grid-cols-4">
             <div>
               <p className="text-muted">Quantity</p>
               <p className="font-mono font-semibold text-primary mt-0.5">{trade.risk.qty} shares</p>
+            </div>
+            <div>
+              <p className="text-muted">Total Cost</p>
+              <p className="font-mono font-semibold text-primary mt-0.5">
+                ${totalCost.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+              </p>
             </div>
             <div>
               <p className="text-muted">R/R Ratio</p>
@@ -126,15 +121,12 @@ export function ConfirmModal({ trade, onClose, onDone }: Props) {
             </div>
           </div>
 
-          {/* Regime badge */}
           <div className={cn('flex items-center gap-2 rounded-lg border px-3 py-2 text-xs', regimeColor(trade.regime))}>
             <AlertTriangle className="h-3 w-3 shrink-0" />
             <span>Regime: <strong>{regimeLabel(trade.regime)}</strong></span>
           </div>
-
         </div>
 
-        {/* Footer */}
         <div className="flex gap-2 border-t border-bg-border px-6 py-4">
           {confirmed ? (
             <div className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-bull/10 py-2.5 text-sm font-semibold text-bull">
@@ -143,18 +135,15 @@ export function ConfirmModal({ trade, onClose, onDone }: Props) {
             </div>
           ) : (
             <>
-              <button onClick={onClose} className="btn-ghost flex-1" disabled={loading}>
-                Cancel
-              </button>
+              <button onClick={onClose} className="btn-ghost flex-1" disabled={loading}>Cancel</button>
               <button
                 onClick={handleExecute}
                 disabled={loading}
                 className={cn(
-                  'flex-1 rounded-lg py-2.5 text-sm font-semibold transition-all duration-200',
+                  'flex-1 rounded-lg py-2.5 text-sm font-semibold transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed',
                   isLong
-                    ? 'bg-bull text-bg-base hover:bg-green-400 disabled:opacity-50'
-                    : 'bg-bear text-white hover:bg-red-400 disabled:opacity-50',
-                  'disabled:cursor-not-allowed',
+                    ? 'bg-bull text-bg-base hover:bg-green-400'
+                    : 'bg-bear text-white hover:bg-red-400',
                 )}
               >
                 {loading ? (

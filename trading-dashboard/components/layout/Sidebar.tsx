@@ -3,15 +3,16 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
   LayoutDashboard, TrendingUp, History, BarChart2,
-  Zap, Settings, ExternalLink,
+  Zap, Settings, ExternalLink, FlaskConical,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const nav = [
-  { href: '/',         icon: LayoutDashboard, label: 'Dashboard'  },
-  { href: '/trades',   icon: TrendingUp,      label: 'Trades'     },
-  { href: '/history',  icon: History,         label: 'History'    },
-  { href: '/pnl',      icon: BarChart2,       label: 'P&L'        },
+  { href: '/',          icon: LayoutDashboard, label: 'Dashboard'  },
+  { href: '/trades',    icon: TrendingUp,      label: 'Trades'     },
+  { href: '/history',   icon: History,         label: 'History'    },
+  { href: '/pnl',       icon: BarChart2,       label: 'P&L'        },
+  { href: '/backtest',  icon: FlaskConical,    label: 'Backtest'   },
 ]
 
 export function Sidebar() {

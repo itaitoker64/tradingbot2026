@@ -23,7 +23,6 @@ async function loadDashboard() {
     botGet<SectorStat[]>('/api/sectors'),
   ])
 
-  // Merge Alpaca live equity into stats
   const resolvedStats: PortfolioStats = stats.status === 'fulfilled' ? stats.value : demoStats()
   if (account.status === 'fulfilled') {
     const acc = account.value
@@ -52,7 +51,6 @@ export default async function DashboardPage() {
 
   return (
     <div className="px-6 py-6 space-y-6 max-w-[1400px]">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-primary">Dashboard</h1>
@@ -69,19 +67,14 @@ export default async function DashboardPage() {
         </div>
       </div>
 
-      {/* Account balance bar */}
       <AccountBar account={account} />
-
-      {/* Stats */}
       <StatsCards stats={stats} />
 
-      {/* Chart + Regime */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_220px]">
         <PnLChart data={pnl} />
         <RegimeIndicator regime={regime} />
       </div>
 
-      {/* Sectors + Positions */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[280px_1fr]">
         <SectorHeatmap sectors={sectors} />
         <PositionsTable positions={positions} />

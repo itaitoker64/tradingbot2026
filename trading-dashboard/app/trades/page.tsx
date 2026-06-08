@@ -1,71 +1,203 @@
 'use client'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { TradeCard }       from '@/components/trades/TradeCard'
 import { ConfirmModal }    from '@/components/trades/ConfirmModal'
 import { RegimeIndicator } from '@/components/dashboard/RegimeIndicator'
 import { demoRecommendations, demoRegime, api } from '@/lib/api'
 import type { TradeRecommendation, RegimeInfo } from '@/types/trading'
-import { RefreshCw, Filter, Wifi, WifiOff } from 'lucide-react'
+import { RefreshCw, Filter, Wifi, WifiOff, ChevronDown, ChevronUp, CheckCircle2, ShoppingCart, Loader2 } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
+import { toast } from 'sonner'
 
-const REFRESH_MS = 30_000   // auto-refresh every 30s
+const REFRESH_MS = 30_000
+const PRICE_MS   = 15_000
+const KEY_IDS    = 'executed_trade_ids'
+const KEY_RECS   = 'executed_trade_recs'
+
+function loadIds(): Set<string> {
+  if (typeof window === 'undefined') return new Set()
+  try {
+    const raw = localStorage.getItem(KEY_IDS)
+    return raw ? new Set(JSON.parse(raw) as string[]) : new Set()
+  } catch { return new Set() }
+}
+function saveIds(ids: Set<string>) {
+  try { localStorage.setItem(KEY_IDS, JSON.stringify([...ids])) } catch {}
+}
+function loadExecRecs(): TradeRecommendation[] {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = localStorage.getItem(KEY_RECS)
+    return raw ? (JSON.parse(raw) as TradeRecommendation[]) : []
+  } catch { return [] }
+}
+function saveExecRecs(recs: TradeRecommendation[]) {
+  try { localStorage.setItem(KEY_RECS, JSON.stringify(recs)) } catch {}
+}
+
+function byScore(a: TradeRecommendation, b: TradeRecommendation) {
+  return b.composite_score - a.composite_score
+}
 
 export default function TradesPage() {
-  const [selected,  setSelected]  = useState<TradeRecommendation | null>(null)
-  const [filter,    setFilter]    = useState<'all' | 'LONG' | 'SHORT'>('all')
-  const [trades,    setTrades]    = useState<TradeRecommendation[]>(demoRecommendations())
-  const [regime,    setRegime]    = useState<RegimeInfo>(demoRegime())
-  const [loading,   setLoading]   = useState(false)
-  const [live,      setLive]      = useState(false)
-  const [lastFetch, setLastFetch] = useState<Date | null>(null)
+  const router = useRouter()
+
+  const [selected,     setSelected]     = useState<TradeRecommendation | null>(null)
+  const [filter,       setFilter]       = useState<'all' | 'LONG' | 'SHORT'>('all')
+  const [trades,       setTrades]       = useState<TradeRecommendation[]>(
+    () => [...demoRecommendations()].sort(byScore)
+  )
+  const [regime,       setRegime]       = useState<RegimeInfo>(demoRegime())
+  const [prices,       setPrices]       = useState<Record<string, number>>({})
+  const [loading,      setLoading]      = useState(false)
+  const [live,         setLive]         = useState(false)
+  const [lastFetch,    setLastFetch]    = useState<Date | null>(null)
+  const [executedIds,  setExecutedIds]  = useState<Set<string>>(new Set())
+  const [executedRecs, setExecutedRecs] = useState<TradeRecommendation[]>([])
+  const [showExecuted, setShowExecuted] = useState(false)
+  const [buyingAll,    setBuyingAll]    = useState(false)
+
+  const tradesRef = useRef<TradeRecommendation[]>([])
+  tradesRef.current = trades
+
+  useEffect(() => {
+    setExecutedIds(loadIds())
+    setExecutedRecs(loadExecRecs())
+  }, [])
+
+  const fetchPrices = useCallback(async (recs: TradeRecommendation[]) => {
+    if (!recs.length) return
+    const syms = [...new Set(recs.map(t => t.ticker))]
+    try {
+      const snaps = await api.snapshots(syms)
+      const map: Record<string, number> = {}
+      for (const [sym, snap] of Object.entries(snaps as any)) {
+        const s = snap as any
+        const price = s?.latestTrade?.p ?? s?.latestQuote?.ap ?? s?.dailyBar?.c
+        if (price) map[sym] = price
+      }
+      setPrices(map)
+    } catch { /* offline */ }
+  }, [])
 
   const fetchData = useCallback(async () => {
     setLoading(true)
     try {
       const [recs, reg] = await Promise.allSettled([api.recommendations(), api.regime()])
-      if (recs.status === 'fulfilled' && recs.value.length > 0) {
-        setTrades(recs.value)
-        setLive(true)
-      } else {
-        setTrades(demoRecommendations())
-        setLive(false)
-      }
+      const newRecs = recs.status === 'fulfilled' && recs.value.length > 0
+        ? [...recs.value].sort(byScore)
+        : [...demoRecommendations()].sort(byScore)
+      setTrades(newRecs)
+      setLive(recs.status === 'fulfilled' && recs.value.length > 0)
       if (reg.status === 'fulfilled') setRegime(reg.value)
+      fetchPrices(newRecs)
     } catch {
       setLive(false)
     } finally {
       setLoading(false)
       setLastFetch(new Date())
     }
-  }, [])
+  }, [fetchPrices])
 
   useEffect(() => {
     fetchData()
-    const id = setInterval(fetchData, REFRESH_MS)
-    return () => clearInterval(id)
-  }, [fetchData])
+    const recId   = setInterval(fetchData, REFRESH_MS)
+    const priceId = setInterval(() => fetchPrices(tradesRef.current), PRICE_MS)
+    return () => { clearInterval(recId); clearInterval(priceId) }
+  }, [fetchData, fetchPrices])
 
-  const displayed = filter === 'all' ? trades : trades.filter(t => t.direction === filter)
+  async function handleBuyAll() {
+    if (!active.length || buyingAll) return
+    setBuyingAll(true)
+    let succeeded = 0
+    let failed    = 0
+    for (const trade of active) {
+      try {
+        await api.execute({
+          recommendation_id: trade.id,
+          ticker:          trade.ticker,
+          direction:       trade.direction,
+          qty:             trade.risk.qty,
+          entry:           trade.risk.entry,
+          stop_loss:       trade.risk.stop_loss,
+          take_profit:     trade.risk.take_profit,
+          composite_score: trade.composite_score,
+        })
+        const newIds = new Set(executedIds).add(trade.id)
+        setExecutedIds(newIds)
+        saveIds(newIds)
+        const newRecs = [trade, ...loadExecRecs()]
+        saveExecRecs(newRecs)
+        setExecutedRecs(newRecs)
+        succeeded++
+        toast.success(`${trade.direction} ${trade.ticker}`, {
+          description: `${trade.risk.qty} shares @ ${trade.risk.entry}`,
+        })
+      } catch {
+        failed++
+        toast.error(`Failed: ${trade.ticker}`)
+      }
+    }
+    setBuyingAll(false)
+    setShowExecuted(true)
+    if (succeeded > 0) {
+      toast.success(`Bought all — ${succeeded} trade${succeeded > 1 ? 's' : ''} submitted`, {
+        description: failed > 0 ? `${failed} failed` : undefined,
+      })
+      router.push('/')
+    }
+  }
+
+  function handleExecuted(trade: TradeRecommendation) {
+    const newIds = new Set(executedIds).add(trade.id)
+    setExecutedIds(newIds)
+    saveIds(newIds)
+    const newRecs = [trade, ...executedRecs]
+    setExecutedRecs(newRecs)
+    saveExecRecs(newRecs)
+    setSelected(null)
+    setShowExecuted(true)
+    router.push('/')
+  }
+
+  const active = trades
+    .filter(t => !executedIds.has(t.id))
+    .filter(t => filter === 'all' || t.direction === filter)
 
   return (
     <div className="px-6 py-6 space-y-6 max-w-[1400px]">
-      {/* Header */}
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-primary">Trade Recommendations</h1>
           <p className="text-xs text-muted mt-0.5">
-            {displayed.length} signals · AI multi-agent analysis
-            {lastFetch && ` · Updated ${lastFetch.toLocaleTimeString()}`}
+            {active.length} signals &middot; sorted by win probability
+            {lastFetch && ` · ${lastFetch.toLocaleTimeString()}`}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {/* Live indicator */}
           {live
             ? <span className="flex items-center gap-1.5 text-xs text-bull"><Wifi className="h-3 w-3" /> Live</span>
             : <span className="flex items-center gap-1.5 text-xs text-caution"><WifiOff className="h-3 w-3" /> Demo</span>
           }
-
-          {/* Direction filter */}
+          {active.length > 0 && (
+            <button
+              onClick={handleBuyAll}
+              disabled={buyingAll}
+              className={cn(
+                'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all',
+                'bg-brand-cyan/15 border border-brand-cyan/30 text-brand-cyan hover:bg-brand-cyan/25',
+                'disabled:opacity-50 disabled:cursor-not-allowed',
+              )}
+            >
+              {buyingAll
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <ShoppingCart className="h-3.5 w-3.5" />
+              }
+              {buyingAll ? 'Buying...' : `Buy All (${active.length})`}
+            </button>
+          )}
           <div className="flex items-center gap-1 rounded-lg border border-bg-border p-0.5">
             {(['all', 'LONG', 'SHORT'] as const).map(f => (
               <button
@@ -84,7 +216,6 @@ export default function TradesPage() {
               </button>
             ))}
           </div>
-
           <button onClick={fetchData} className="btn-ghost text-xs" disabled={loading}>
             <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
             Refresh
@@ -93,29 +224,77 @@ export default function TradesPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_220px]">
-        {/* Trade cards */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 content-start">
-          {displayed.length === 0 ? (
+          {active.length === 0 ? (
             <div className="col-span-full card flex flex-col items-center justify-center py-16 text-center">
               <Filter className="h-8 w-8 text-muted mb-3" />
               <p className="text-sm text-muted">No signals match the current filter.</p>
             </div>
           ) : (
-            displayed.map(t => (
-              <TradeCard key={t.id} trade={t} onExecute={setSelected} />
+            active.map((t, i) => (
+              <div key={t.id} className="relative">
+                <span className={cn(
+                  'absolute -top-2 -left-2 z-10 flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold shadow',
+                  i === 0 ? 'bg-brand-cyan text-bg-base'
+                  : i === 1 ? 'bg-brand-cyan/50 text-primary'
+                  : 'bg-bg-hover text-muted',
+                )}>
+                  {i + 1}
+                </span>
+                <TradeCard
+                  trade={t}
+                  onExecute={setSelected}
+                  currentPrice={prices[t.ticker]}
+                />
+              </div>
             ))
           )}
         </div>
-
-        {/* Regime sidebar */}
         <RegimeIndicator regime={regime} />
       </div>
 
-      {/* Confirmation modal */}
+      {executedRecs.length > 0 && (
+        <div className="space-y-3 border-t border-bg-border pt-4">
+          <button
+            onClick={() => setShowExecuted(v => !v)}
+            className="flex items-center gap-2 text-sm font-semibold text-subtle hover:text-primary transition-colors"
+          >
+            <CheckCircle2 className="h-4 w-4 text-bull" />
+            Executed Today
+            <span className="rounded-full bg-bull/15 px-2 py-0.5 text-[10px] font-bold text-bull">
+              {executedRecs.length}
+            </span>
+            {showExecuted
+              ? <ChevronUp className="h-3.5 w-3.5 text-muted" />
+              : <ChevronDown className="h-3.5 w-3.5 text-muted" />
+            }
+          </button>
+
+          {showExecuted && (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {executedRecs.map(t => (
+                <div key={`exec-${t.id}`} className="relative pointer-events-none select-none opacity-55">
+                  <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl">
+                    <span className="flex items-center gap-1.5 rounded-full bg-bull/20 px-3 py-1 text-xs font-semibold text-bull border border-bull/30 shadow">
+                      <CheckCircle2 className="h-3 w-3" /> Executed
+                    </span>
+                  </div>
+                  <TradeCard
+                    trade={t}
+                    onExecute={() => {}}
+                    currentPrice={prices[t.ticker]}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <ConfirmModal
         trade={selected}
         onClose={() => setSelected(null)}
-        onDone={() => { setSelected(null); fetchData() }}
+        onDone={() => selected && handleExecuted(selected)}
       />
     </div>
   )

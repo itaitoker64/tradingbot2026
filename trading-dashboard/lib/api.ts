@@ -35,7 +35,7 @@ export const api = {
   pnl:             (): Promise<PnLPoint[]>              => clientGet('/api/bot/pnl'),
   stats:           (): Promise<PortfolioStats>          => clientGet('/api/bot/stats'),
   regime:          (): Promise<RegimeInfo>              => clientGet('/api/bot/regime'),
-  sectors:         (): Promise<SectorStat[]>            => clientGet('/api/bot/sectors'),  // todo: add route
+  sectors:         (): Promise<SectorStat[]>            => clientGet('/api/bot/sectors'),
   positions:       ()                                   => clientGet('/api/alpaca/positions'),
   account:         ()                                   => clientGet('/api/alpaca/account'),
   snapshots:       (syms: string[])                     => clientGet(`/api/alpaca/snapshots?symbols=${syms.join(',')}`),
