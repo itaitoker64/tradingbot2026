@@ -3,12 +3,10 @@
 Sends a rendered chart image to a vision-capable model and asks for a
 structured read of the setup (support/resistance, trend, breakout) mapped to
 a 1..100 score. If no image or API key is available it degrades to neutral.
-
-The chart can be rendered upstream (e.g. mplfinance) and its path placed on
-``AnalysisContext.chart_image_path``.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -30,7 +28,7 @@ class VisionAgent(BaseAgent):
         *,
         weight: float = 0.2,
         anthropic_api_key: str = "",
-        model: str = "claude-3-5-sonnet-latest",
+        model: str = "claude-sonnet-4-6",
     ) -> None:
         super().__init__(weight=weight)
         self.api_key = anthropic_api_key
@@ -54,7 +52,9 @@ class VisionAgent(BaseAgent):
             )
 
         media_type = mimetypes.guess_type(path)[0] or "image/png"
-        b64 = base64.standard_b64encode(Path(path).read_bytes()).decode()
+        # FIX: read file bytes with asyncio.to_thread to avoid blocking the event loop
+        raw = await asyncio.to_thread(Path(path).read_bytes)
+        b64 = base64.standard_b64encode(raw).decode()
 
         import anthropic  # lazy import
 

@@ -5,8 +5,6 @@ from enum import Enum
 
 
 class Decision(str, Enum):
-    """Final directional decision emitted by the Portfolio Manager."""
-
     LONG = "LONG"
     SHORT = "SHORT"
     PASS = "PASS"
@@ -29,10 +27,10 @@ class AgentRole(str, Enum):
     VISION = "vision"
     TECHNICAL = "technical"
     RISK = "risk"
+    LIQUID = "liquid"
+    SOCIAL = "social"     # AI4Trade community signal feed
 
 
 class RunMode(str, Enum):
-    """Backtest -> Alpaca paper/historical. Live -> IBKR."""
-
     BACKTEST = "backtest"
     LIVE = "live"

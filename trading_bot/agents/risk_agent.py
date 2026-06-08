@@ -30,7 +30,16 @@ class RiskAgent(BaseAgent):
         self.cfg = cfg
 
     async def evaluate(self, ctx: AnalysisContext) -> AgentEvaluation:
-        plan = self.build_plan(ctx, intended=Decision.LONG)
+        # FIX: was hardcoded to LONG; now evaluates the most viable direction
+        # by building both plans and picking the one with the better R/R.
+        long_plan = self.build_plan(ctx, intended=Decision.LONG)
+        short_plan = self.build_plan(ctx, intended=Decision.SHORT)
+
+        # Pick whichever direction has a valid plan (prefer LONG on tie)
+        plan = long_plan
+        if plan is None or (short_plan is not None and short_plan.risk_reward > (plan.risk_reward if plan else 0)):
+            plan = short_plan
+
         if plan is None:
             return AgentEvaluation(
                 role=self.role,
@@ -38,6 +47,7 @@ class RiskAgent(BaseAgent):
                 veto=True,
                 rationale="cannot build a valid risk plan",
             )
+
         score = self._viability_score(plan, ctx)
         veto = plan.risk_reward < self.cfg.min_risk_reward or plan.qty <= 0
         return AgentEvaluation(
@@ -54,6 +64,7 @@ class RiskAgent(BaseAgent):
         )
 
     # --- planning -------------------------------------------------------
+
     def build_plan(self, ctx: AnalysisContext, *, intended: Decision) -> Optional[RiskParameters]:
         if ctx.bars is None or ctx.bars.empty:
             return None
@@ -86,7 +97,6 @@ class RiskAgent(BaseAgent):
             return None
 
         qty = risk_usd / per_share_risk
-        # Respect a max position cap.
         max_qty_by_exposure = (equity * self.cfg.max_position_pct) / price
         qty = float(np.floor(min(qty, max_qty_by_exposure)))
 
@@ -101,7 +111,6 @@ class RiskAgent(BaseAgent):
         )
 
     def _viability_score(self, plan: RiskParameters, ctx: AnalysisContext) -> float:
-        # Reward higher R/R, penalise tiny size and extreme volatility.
         rr_score = np.interp(plan.risk_reward, [1.0, self.cfg.min_risk_reward, 3.0], [20, 55, 95])
         size_ok = 60.0 if plan.qty > 0 else 1.0
         vol = self._atr(ctx.bars) / max(ctx.last_price or 1.0, 1e-9)

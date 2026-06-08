@@ -3,25 +3,18 @@ python-dotenv>=1.0
 pandas>=2.1
 numpy>=1.26
 aiohttp>=3.9
+websockets>=12.0      # AI4Trade WebSocket heartbeat
 
 # --- Technical analysis ---
-# pandas-ta is pure-python and easy to install. TA-Lib (optional) needs the
-# native C library; install that separately if you prefer it.
 pandas-ta>=0.3.14b
 
 # --- Brokers / data ---
-# alpaca-trade-api is DEPRECATED. Use the official alpaca-py SDK.
 alpaca-py>=0.21
-# IBKR live execution. If install/compat fails, swap for the maintained fork:
-#   ib-async>=1.0   (import ib_async as ib_insync)
 ib-insync>=0.9.86
 
 # --- Vision / LLM sentiment ---
-anthropic>=0.40
+anthropic>=0.50
 
-# --- Charting for the vision agent ---
+# --- Charting (vision agent) ---
 matplotlib>=3.8
 mplfinance>=0.12.10b0
-
-# --- Optional, only if you switch to TA-Lib ---
-# TA-Lib>=0.4.28
