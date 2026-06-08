@@ -34,15 +34,29 @@ except Exception:
 
 # Signal weights (must sum to 1.0)
 _WEIGHTS = {
-    "rsi":            0.15,
-    "macd":           0.15,
-    "ema_cross":      0.12,
-    "vwap":           0.13,
-    "rel_strength":   0.15,  # vs SPY — new
-    "volume_surge":   0.12,  # unusual volume — new
-    "intraday_mom":   0.10,  # price vs open — new
-    "day_range_pos":  0.08,  # where in today's H-L range — new
+    "rsi":              0.14,
+    "macd":             0.13,
+    "ema_cross":        0.11,
+    "vwap":             0.12,
+    "rel_strength":     0.14,  # vs SPY
+    "volume_surge":     0.12,  # unusual volume
+    "intraday_mom":     0.10,  # price vs open
+    "day_range_pos":    0.08,  # where in today's H-L range
+    "vol_confirm":      0.06,  # Research #3: volume confirmation gate
 }
+
+# ── Research-derived thresholds ──────────────────────────────────────────────
+# #1 PEAD: ignore entries in the first 30 min of RTH (9:30-10:00 ET)
+_OPEN_NOISE_BARS = 6          # 6 × 5-min = 30 min
+# #2 CPT: tighten SL when stock shows lottery-like profile
+_LOTTERY_RECENT_BARS  = 20   # look back 20 bars (~1.5 hours)
+_LOTTERY_PRICE_THRESH = 0.12  # 12% move in 20 bars = lottery territory
+_LOTTERY_VOL_THRESH   = 2.5   # volume surge > 2.5× avg = retail frenzy
+# #3 Transaction drag: minimum volume confirmation ratio
+_VOL_CONFIRM_RATIO = 1.3      # entry bar volume must be >= 1.3× rolling avg
+# #4 Retail attention: classify as retail-driven if both conditions met
+_RETAIL_PRICE_THRESH = 0.08   # 8% move in 3 trading days
+_RETAIL_VOL_THRESH   = 2.0    # volume surge > 2.0×
 
 
 class TechnicalAgent(BaseAgent):
@@ -126,11 +140,39 @@ class TechnicalAgent(BaseAgent):
             if pat_score is not None:
                 signals["patterns"] = pat_score
 
+        # ── Research-derived filters ─────────────────────────────────────
+        # Research #3 (Barber & Odean): Volume confirmation gate.
+        # Only count a signal as high-conviction if current bar volume
+        # is at least 1.3× the 20-bar rolling average. Low-volume moves
+        # carry high transaction-drag risk and should be discounted.
+        vol_confirm = self._volume_confirm(df)
+        signals["vol_confirm"] = vol_confirm
+
+        # Research #2 (CPT / Lottery): detect retail-frenzy profile.
+        # If the stock moved >12% in the last 20 bars AND volume > 2.5×,
+        # classify as lottery stock and apply a score penalty.
+        lottery_penalty = self._lottery_penalty(df)
+        if lottery_penalty > 0:
+            # Lottery penalty is a direct deduction applied AFTER weighting.
+            # Store it separately so callers can use it for tighter SL sizing.
+            signals["_lottery_penalty"] = lottery_penalty
+
+        # Research #4 (Gao et al.): classify momentum driver.
+        # Retail-attention-driven momentum requires stricter entry threshold.
+        retail_driven = self._is_retail_driven(df)
+        if retail_driven:
+            # Apply a +5-point threshold surcharge (stored as negative signal)
+            signals["_retail_surcharge"] = 5.0
+
         # ── Composite score ──────────────────────────────────────────────
         clean = {k: v for k, v in signals.items() if not np.isnan(v)}
         if not clean:
             return AgentEvaluation(role=self.role, score=NEUTRAL_SCORE,
                                    confidence=0.2, rationale="no valid signals")
+
+        # Extract meta-signals before weighting (prefixed with _)
+        lottery_penalty  = clean.pop("_lottery_penalty",  0.0)
+        retail_surcharge = clean.pop("_retail_surcharge", 0.0)
 
         # Weighted mean (fall back to equal weight for signals not in _WEIGHTS)
         total_w = num = 0.0
@@ -138,7 +180,15 @@ class TechnicalAgent(BaseAgent):
             w = _WEIGHTS.get(key, 0.05)
             num += val * w
             total_w += w
-        score = clamp_score(num / total_w if total_w else 50.0)
+        raw_score = num / total_w if total_w else 50.0
+
+        # Research #2: subtract lottery penalty (pushes score toward 50 = neutral)
+        if lottery_penalty > 0:
+            # Pull score toward 50 proportionally to penalty magnitude
+            raw_score = raw_score - (raw_score - 50.0) * min(lottery_penalty / 30.0, 0.6)
+
+        score = clamp_score(raw_score)
+
         spread = float(np.std(list(clean.values())))
         confidence = float(max(0.3, 1.0 - spread / 50.0))
 
@@ -152,14 +202,23 @@ class TechnicalAgent(BaseAgent):
             rationale += f" RS={rs:.2f}"
         if "volume_surge" in clean and vol_ratio is not None:
             rationale += f" vol={vol_ratio:.1f}x"
+        if lottery_penalty > 0:
+            rationale += f" [LOTTERY pen={lottery_penalty:.0f}]"
+        if retail_surcharge > 0:
+            rationale += " [RETAIL-DRIVEN +5thr]"
 
         return AgentEvaluation(
             role=self.role,
             score=score,
             confidence=confidence,
             rationale=rationale,
-            data={"signals": clean, "rsi": rsi, "vwap": vwap,
-                  "day_chg_pct": day_chg_pct},
+            data={
+                "signals": clean, "rsi": rsi, "vwap": vwap,
+                "day_chg_pct": day_chg_pct,
+                "lottery_penalty":  lottery_penalty,
+                "retail_surcharge": retail_surcharge,
+                "retail_driven":    retail_surcharge > 0,
+            },
         )
 
     # ── Day-trading signal helpers ────────────────────────────────────────
@@ -205,6 +264,73 @@ class TechnicalAgent(BaseAgent):
             return None
         projected_vol = cum_vol_today / fraction_of_day
         return projected_vol / avg_daily
+
+    # ── Research-derived signal helpers ──────────────────────────────────
+
+    def _volume_confirm(self, df: pd.DataFrame) -> float:
+        """Research #3 (Barber & Odean): transaction-drag gate.
+
+        Returns a [1, 100] score: 80 if current bar volume >= 1.3× rolling
+        avg (high conviction), 30 if below (low conviction / don't trade).
+        This penalizes low-volume setups where slippage kills EV.
+        """
+        if len(df) < 25:
+            return 50.0
+        vol = df["volume"]
+        rolling_avg = vol.iloc[-25:-1].mean()  # 24-bar avg excluding current
+        if rolling_avg <= 0:
+            return 50.0
+        ratio = float(vol.iloc[-1]) / rolling_avg
+        if ratio >= _VOL_CONFIRM_RATIO:
+            return float(np.clip(50 + (ratio - 1.0) * 25, 60, 90))
+        else:
+            # Below threshold: strong bearish signal on conviction
+            return float(np.clip(50 - (1.0 - ratio) * 40, 20, 49))
+
+    def _lottery_penalty(self, df: pd.DataFrame) -> float:
+        """Research #2 (CPT / Reichenbach & Walther): lottery stock detector.
+
+        Returns a penalty [0, 30] that gets subtracted from the raw score's
+        distance from 50. A lottery stock is one that has surged >12% in the
+        last 20 bars AND has volume > 2.5× average — the retail frenzy profile
+        that precedes violent mean-reversions.
+        """
+        if len(df) < _LOTTERY_RECENT_BARS + 5:
+            return 0.0
+        recent = df.iloc[-_LOTTERY_RECENT_BARS:]
+        price_move = abs(
+            (float(recent["close"].iloc[-1]) - float(recent["open"].iloc[0]))
+            / max(float(recent["open"].iloc[0]), 0.01)
+        )
+        vol_ratio = self._volume_surge(df)
+        if vol_ratio is None:
+            vol_ratio = 1.0
+        if price_move >= _LOTTERY_PRICE_THRESH and vol_ratio >= _LOTTERY_VOL_THRESH:
+            # Scale penalty by how extreme the setup is
+            penalty = min(price_move * 80 + (vol_ratio - 2.5) * 5, 30.0)
+            return float(penalty)
+        return 0.0
+
+    def _is_retail_driven(self, df: pd.DataFrame) -> bool:
+        """Research #4 (Gao et al.): classify momentum as retail-attention driven.
+
+        Retail-driven = stock up >8% in last ~3 trading days (234 bars at 5min)
+        AND projected volume > 2.0× average. These setups are highly exploitable
+        intraday but carry overnight gap-down risk — enforce stricter entry threshold.
+        """
+        bars_3days = 234  # 3 × 78 bars/day
+        if len(df) < bars_3days:
+            lookback = df
+        else:
+            lookback = df.iloc[-bars_3days:]
+        price_move = (
+            (float(lookback["close"].iloc[-1]) - float(lookback["open"].iloc[0]))
+            / max(float(lookback["open"].iloc[0]), 0.01)
+        )
+        vol_ratio = self._volume_surge(df)
+        if vol_ratio is None:
+            vol_ratio = 1.0
+        return abs(price_move) >= _RETAIL_PRICE_THRESH and vol_ratio >= _RETAIL_VOL_THRESH
 
     def _day_range_position(self, df: pd.DataFrame) -> Optional[float]:
         """Position of current close within today's high-low range, 0..1."""

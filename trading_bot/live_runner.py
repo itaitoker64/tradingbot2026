@@ -3,16 +3,17 @@
 Replaces the one-shot polling loop in main.py for LIVE mode.
 Instead of evaluating tickers on a fixed interval, the bot:
 
-  1. Runs an initial evaluation of all configured tickers on startup.
-  2. Subscribes to the AI4Trade heartbeat loop.
-  3. Re-evaluates any ticker mentioned in incoming platform tasks/messages.
-  4. Re-evaluates all tickers every RESCAN_INTERVAL_MIN minutes regardless.
-
-This is event-driven rather than time-driven — the bot reacts to the
-community instead of blindly polling.
+  1. Auto-scans the market for candidates (most-active + gainers/losers)
+     OR accepts an explicit ticker list from the CLI.
+  2. Runs an initial evaluation of all candidates on startup.
+  3. Subscribes to the AI4Trade heartbeat loop.
+  4. Re-evaluates any ticker mentioned in incoming platform tasks/messages.
+  5. Re-scans the market universe every RESCAN_INTERVAL_MIN minutes and
+     refreshes the active ticker list.
 
 Usage:
-    python live_runner.py AAPL MSFT NVDA TSLA
+    python live_runner.py              # auto-scan (no args needed)
+    python live_runner.py AAPL NVDA   # manual override
 """
 from __future__ import annotations
 
@@ -23,9 +24,11 @@ import sys
 from datetime import datetime, timezone
 from typing import Sequence
 
+from pathlib import Path
 from dotenv import load_dotenv
-
-load_dotenv()
+_root = Path(__file__).parent.parent
+for _f in [_root / ".env", _root / ".env.local", _root / "trading-dashboard" / ".env.local"]:
+    if _f.exists(): load_dotenv(_f, override=False)
 
 from config.settings import load_settings
 from core.models import AnalysisContext
@@ -33,6 +36,7 @@ from data.chart_renderer import render_chart
 from data.ai4trade_client import AI4TradeClient
 from data.market_intel_source import CombinedNewsSource, MarketIntelNewsSource
 from data.news_sources import AlpacaNewsSource, PoliStockSource
+from data.universe_scanner import UniverseScanner
 from agents.fundamental_agent import FundamentalAgent
 from agents.liquid_agent import LiquidAgent
 from agents.risk_agent import RiskAgent
@@ -124,13 +128,43 @@ async def rescan_loop(
     execute: bool,
     publisher: SignalPublisher | None,
     interval_min: int,
+    universe: UniverseScanner | None = None,
+    scanner_cfg=None,
 ) -> None:
-    """Re-evaluate all tickers every interval_min minutes."""
+    """Re-evaluate tickers every interval_min minutes.
+
+    If a UniverseScanner is provided, refreshes the candidate list each cycle
+    so the bot always tracks the hottest stocks, not yesterday's picks.
+    """
+    active = tickers  # mutable reference updated each cycle
     while True:
         await asyncio.sleep(interval_min * 60)
-        logger.info("Scheduled rescan of %s", tickers)
+
+        # Refresh universe if auto-scan is enabled
+        if universe is not None and scanner_cfg is not None:
+            try:
+                fresh = await universe.get_candidates(
+                    top_n=scanner_cfg.top_n,
+                    min_price=scanner_cfg.min_price,
+                    max_price=scanner_cfg.max_price,
+                    min_volume=scanner_cfg.min_volume,
+                    min_change=scanner_cfg.min_change_pct,
+                )
+                if fresh:
+                    added   = set(fresh) - set(active)
+                    removed = set(active) - set(fresh)
+                    active  = fresh
+                    if added or removed:
+                        logger.info(
+                            "Universe refreshed: +%s -%s → active=%s",
+                            sorted(added), sorted(removed), active
+                        )
+            except Exception:
+                logger.exception("Universe refresh failed — keeping previous list")
+
+        logger.info("Scheduled rescan of %s", active)
         await asyncio.gather(
-            *[evaluate_ticker(pm, broker, t, execute=execute, publisher=publisher) for t in tickers],
+            *[evaluate_ticker(pm, broker, t, execute=execute, publisher=publisher) for t in active],
             return_exceptions=True,
         )
 
@@ -146,6 +180,29 @@ async def main(tickers: Sequence[str]) -> None:
     broker: BaseBroker = AlpacaBroker(
         settings.alpaca_key_id, settings.alpaca_secret, paper=True
     )
+
+    # --- auto-scan universe if no tickers given -----------------------
+    universe: UniverseScanner | None = None
+    tickers_list: list[str] = list(tickers)
+
+    if not tickers_list and settings.scanner.enabled:
+        universe = UniverseScanner(settings.alpaca_key_id, settings.alpaca_secret)
+        logger.info("No tickers provided — running UniverseScanner...")
+        async with broker:
+            tickers_list = await universe.get_candidates(
+                top_n=settings.scanner.top_n,
+                min_price=settings.scanner.min_price,
+                max_price=settings.scanner.max_price,
+                min_volume=settings.scanner.min_volume,
+                min_change=settings.scanner.min_change_pct,
+            )
+        if not tickers_list:
+            logger.error("Universe scanner returned no candidates — exiting")
+            return
+        logger.info("Auto-selected %d tickers: %s", len(tickers_list), tickers_list)
+    elif not tickers_list:
+        logger.error("No tickers provided and SCANNER_ENABLED=false — nothing to do")
+        return
 
     # --- build AI4Trade client ----------------------------------------
     ai4 = AI4TradeClient()
@@ -175,7 +232,6 @@ async def main(tickers: Sequence[str]) -> None:
     )
 
     publisher = SignalPublisher(ai4, publish_pass=True) if ai4.token else None
-    tickers_list = list(tickers)
 
     async with broker:
         # Initial scan
@@ -192,13 +248,18 @@ async def main(tickers: Sequence[str]) -> None:
 
         await asyncio.gather(
             ai4.heartbeat_loop(hb_callback),
-            rescan_loop(pm, broker, tickers_list, execute=execute,
-                        publisher=publisher, interval_min=RESCAN_INTERVAL_MIN),
+            rescan_loop(
+                pm, broker, tickers_list,
+                execute=execute,
+                publisher=publisher,
+                interval_min=RESCAN_INTERVAL_MIN,
+                universe=universe,
+                scanner_cfg=settings.scanner if universe else None,
+            ),
         )
 
     await ai4.__aexit__(None, None, None)
 
 
 if __name__ == "__main__":
-    syms = sys.argv[1:] or ["AAPL"]
-    asyncio.run(main(syms))
+    asyncio.run(main(sys.argv[1:]))

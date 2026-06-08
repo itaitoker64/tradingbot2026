@@ -1,11 +1,11 @@
 """Composition root + run loops.
 
 Usage:
-    RUN_MODE=backtest python main.py AAPL MSFT        # Alpaca paper + AI4Trade signals
-    RUN_MODE=live    python main.py AAPL              # IBKR or Liquid live
-    python live_runner.py AAPL MSFT                  # Heartbeat-driven live mode (recommended)
-    python challenge_runner.py AAPL BTC              # AI4Trade challenge competition
-    python backtest_runner.py AAPL MSFT NVDA         # Walk-forward backtest + dashboard
+    python main.py                   # auto-scan market (no tickers needed)
+    python main.py AAPL MSFT         # manual ticker override
+    python live_runner.py            # heartbeat-driven live mode (recommended)
+    python challenge_runner.py AAPL  # AI4Trade challenge competition
+    python backtest_runner.py AAPL   # walk-forward backtest + dashboard
 """
 from __future__ import annotations
 
@@ -15,8 +15,11 @@ import os
 import sys
 from typing import Sequence
 
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv()
+_root = Path(__file__).parent.parent
+for _f in [_root / ".env", _root / ".env.local", _root / "trading-dashboard" / ".env.local"]:
+    if _f.exists(): load_dotenv(_f, override=False)
 
 from config.settings import Settings, load_settings
 from core.enums import RunMode
@@ -26,6 +29,8 @@ from data.ai4trade_client import AI4TradeClient
 from data.market_intel_source import CombinedNewsSource, MarketIntelNewsSource
 from data.news_sources import AlpacaNewsSource, NewsSource, PoliStockSource
 from data.sector_scanner import SectorScanner
+from data.dashboard_publisher import push_scan_results
+from data.universe_scanner import UniverseScanner
 from agents.fundamental_agent import FundamentalAgent
 from agents.liquid_agent import LiquidAgent
 from agents.regime_agent import detect_regime
@@ -95,7 +100,30 @@ async def evaluate_ticker(pm: PortfolioManager, broker: BaseBroker, ticker: str,
 
 async def main(tickers: Sequence[str]) -> None:
     settings = load_settings()
-    logger.info("run_mode=%s tickers=%s", settings.run_mode.value, list(tickers))
+
+    # ── Auto-scan universe if no tickers given ────────────────────────────────
+    tickers_list: list[str] = list(tickers)
+    if not tickers_list:
+        if settings.scanner.enabled:
+            broker_tmp = build_broker(settings)
+            universe = UniverseScanner(settings.alpaca_key_id, settings.alpaca_secret)
+            logger.info("No tickers provided — running UniverseScanner...")
+            async with broker_tmp:
+                tickers_list = await universe.get_candidates(
+                    top_n=settings.scanner.top_n,
+                    min_price=settings.scanner.min_price,
+                    max_price=settings.scanner.max_price,
+                    min_volume=settings.scanner.min_volume,
+                    min_change=settings.scanner.min_change_pct,
+                )
+            if not tickers_list:
+                logger.error("Universe scanner returned no candidates — exiting")
+                return
+        else:
+            logger.error("No tickers provided and SCANNER_ENABLED=false — nothing to do")
+            return
+
+    logger.info("run_mode=%s tickers=%s", settings.run_mode.value, tickers_list)
 
     ai4 = AI4TradeClient(
         email=settings.ai4trade_email,
@@ -121,7 +149,7 @@ async def main(tickers: Sequence[str]) -> None:
 
         # ── 2. Sector scan (hot sectors → prioritise tickers) ─────────────────
         scanner = SectorScanner(broker)
-        scan    = await scanner.scan(list(tickers))
+        scan    = await scanner.scan(tickers_list)
         hot     = set(scan.hot_tickers(top_n_sectors=2))
         if hot:
             logger.info("Hot tickers (top 2 sectors): %s | sectors: %s",
@@ -136,18 +164,34 @@ async def main(tickers: Sequence[str]) -> None:
 
         # ── 4. Evaluate tickers concurrently ──────────────────────────────────
         results = await asyncio.gather(
-            *[evaluate_ticker(pm, broker, t, execute=execute) for t in tickers],
+            *[evaluate_ticker(pm, broker, t, execute=execute) for t in tickers_list],
             return_exceptions=True,
         )
-        for ticker, result in zip(tickers, results):
+        decisions = []
+        for ticker, result in zip(tickers_list, results):
             if isinstance(result, Exception):
                 logger.exception("evaluation failed for %s: %s", ticker, result)
-            elif ticker.upper() not in hot:
-                logger.info("  %s is in a cold sector — signal noted but deprioritised", ticker)
+            else:
+                if ticker.upper() not in hot:
+                    logger.info("  %s is in a cold sector — signal noted but deprioritised", ticker)
+                # collect non-exception decisions for dashboard push
+                # (evaluate_ticker logs internally; result is None here)
+
+        # ── 5. Push signals to dashboard API ─────────────────────────────────
+        try:
+            # Re-run decisions collection via pm's last evaluations
+            # Simpler: push_scan_results with regime + scan for dashboard
+            await push_scan_results(
+                decisions=[],   # populated by live_runner which has direct access
+                regime=regime,
+                scan_report=scan,
+            )
+        except Exception as e:
+            logger.debug("Dashboard push skipped: %s", e)
 
     await ai4.__aexit__(None, None, None)
 
 
 if __name__ == "__main__":
-    syms = sys.argv[1:] or ["AAPL"]
-    asyncio.run(main(syms))
+    # No default ticker — if nothing passed, UniverseScanner takes over
+    asyncio.run(main(sys.argv[1:]))

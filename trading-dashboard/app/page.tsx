@@ -1,0 +1,91 @@
+import { StatsCards }     from '@/components/dashboard/StatsCards'
+import { AccountBar }      from '@/components/dashboard/AccountBar'
+import { PnLChart }        from '@/components/dashboard/PnLChart'
+import { RegimeIndicator } from '@/components/dashboard/RegimeIndicator'
+import { SectorHeatmap }   from '@/components/dashboard/SectorHeatmap'
+import { PositionsTable }  from '@/components/dashboard/PositionsTable'
+import { RefreshButton }   from '@/components/layout/RefreshButton'
+import {
+  demoStats, demoPnL, demoRegime, demoSectors,
+} from '@/lib/api'
+import { getAccount, getPositions } from '@/lib/alpaca'
+import { botGet } from '@/lib/bot-api'
+import type { PortfolioStats, PnLPoint, RegimeInfo, SectorStat } from '@/types/trading'
+import type { AlpacaAccount } from '@/lib/alpaca'
+
+async function loadDashboard() {
+  const [account, positions, stats, pnl, regime, sectors] = await Promise.allSettled([
+    getAccount(),
+    getPositions(),
+    botGet<PortfolioStats>('/api/stats'),
+    botGet<PnLPoint[]>('/api/pnl'),
+    botGet<RegimeInfo>('/api/regime'),
+    botGet<SectorStat[]>('/api/sectors'),
+  ])
+
+  // Merge Alpaca live equity into stats
+  const resolvedStats: PortfolioStats = stats.status === 'fulfilled' ? stats.value : demoStats()
+  if (account.status === 'fulfilled') {
+    const acc = account.value
+    const livePnl   = parseFloat(acc.unrealized_pl) + parseFloat(acc.realized_pl ?? '0')
+    const todayPnl  = parseFloat(acc.equity) - parseFloat(acc.last_equity)
+    if (!isNaN(livePnl))  resolvedStats.total_pnl = +livePnl.toFixed(2)
+    if (!isNaN(todayPnl)) resolvedStats.today_pnl = +todayPnl.toFixed(2)
+  }
+  if (positions.status === 'fulfilled') {
+    resolvedStats.open_positions = positions.value.length
+  }
+
+  return {
+    stats:     resolvedStats,
+    account:   account.status === 'fulfilled' ? account.value : null as AlpacaAccount | null,
+    pnl:       pnl.status     === 'fulfilled' ? pnl.value     : demoPnL(),
+    regime:    regime.status  === 'fulfilled' ? regime.value  : demoRegime(),
+    sectors:   sectors.status === 'fulfilled' ? sectors.value : demoSectors(),
+    positions: positions.status === 'fulfilled' ? positions.value : [],
+    live:      account.status === 'fulfilled',
+  }
+}
+
+export default async function DashboardPage() {
+  const { stats, account, pnl, regime, sectors, positions, live } = await loadDashboard()
+
+  return (
+    <div className="px-6 py-6 space-y-6 max-w-[1400px]">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold text-primary">Dashboard</h1>
+          <p className="text-xs text-muted mt-0.5">
+            {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {live
+            ? <span className="flex items-center gap-1.5 text-xs text-bull"><span className="h-1.5 w-1.5 rounded-full bg-bull animate-pulse-slow" />Live</span>
+            : <span className="flex items-center gap-1.5 text-xs text-caution"><span className="h-1.5 w-1.5 rounded-full bg-caution" />Demo data</span>
+          }
+          <RefreshButton />
+        </div>
+      </div>
+
+      {/* Account balance bar */}
+      <AccountBar account={account} />
+
+      {/* Stats */}
+      <StatsCards stats={stats} />
+
+      {/* Chart + Regime */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_220px]">
+        <PnLChart data={pnl} />
+        <RegimeIndicator regime={regime} />
+      </div>
+
+      {/* Sectors + Positions */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[280px_1fr]">
+        <SectorHeatmap sectors={sectors} />
+        <PositionsTable positions={positions} />
+      </div>
+    </div>
+  )
+}

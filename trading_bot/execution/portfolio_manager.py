@@ -36,8 +36,8 @@ class PortfolioManager:
         settings: Settings,
         broker: Optional[BaseBroker],
         fundamental: FundamentalAgent,
-        vision: VisionAgent,
-        technical: TechnicalAgent,
+        vision: Optional[VisionAgent] = None,
+        technical: TechnicalAgent = None,
         risk: RiskAgent,
         liquid: Optional[LiquidAgent] = None,
         social: Optional[SocialSentimentAgent] = None,
@@ -65,28 +65,38 @@ class PortfolioManager:
     async def decide(self, ctx: AnalysisContext) -> TradeDecision:
         coros = [
             self.fundamental.safe_evaluate(ctx),
-            self.vision.safe_evaluate(ctx),
             self.technical.safe_evaluate(ctx),
             self.risk.safe_evaluate(ctx),
         ]
+        # Optional agents
+        vision_idx = liquid_idx = social_idx = None
+        if self.vision is not None:
+            vision_idx = len(coros)
+            coros.append(self.vision.safe_evaluate(ctx))
         if self.liquid is not None:
+            liquid_idx = len(coros)
             coros.append(self.liquid.safe_evaluate(ctx))
         if self.social is not None:
+            social_idx = len(coros)
             coros.append(self.social.safe_evaluate(ctx))
 
         results = await asyncio.gather(*coros)
-        fundamental, vision, technical, risk = results[0], results[1], results[2], results[3]
-        idx = 4
-        liquid_eval: Optional[AgentEvaluation] = None
-        social_eval: Optional[AgentEvaluation] = None
-        if self.liquid is not None:
-            liquid_eval = results[idx]; idx += 1
-        if self.social is not None:
-            social_eval = results[idx]
+        fundamental = results[0]
+        technical   = results[1]
+        risk        = results[2]
+        vision_eval:  Optional[AgentEvaluation] = results[vision_idx]  if vision_idx  is not None else None
+        liquid_eval:  Optional[AgentEvaluation] = results[liquid_idx]  if liquid_idx  is not None else None
+        social_eval:  Optional[AgentEvaluation] = results[social_idx]  if social_idx  is not None else None
 
-        evaluations = tuple(results)
-        composite = self._composite(fundamental, vision, technical, liquid_eval, social_eval)
-        decision = self._direction(composite)
+        evaluations = tuple(r for r in results)
+        composite = self._composite(fundamental, vision_eval, technical, liquid_eval, social_eval)
+
+        # Research #4: extract retail-driven surcharge from TechnicalAgent data
+        retail_surcharge = 0.0
+        if technical is not None and technical.data:
+            retail_surcharge = float(technical.data.get("retail_surcharge", 0.0))
+
+        decision = self._direction(composite, retail_surcharge=retail_surcharge)
 
         if risk.veto:
             logger.info("%s vetoed by Risk: %s", ctx.ticker, risk.rationale)
@@ -154,15 +164,27 @@ class PortfolioManager:
 
         num = den = 0.0
         for key, ev in agents:
+            if ev is None:          # optional agent not wired up (e.g. vision in backtest)
+                continue
             w = self._weights.get(key, 0.0) * max(ev.confidence, 0.05)
             num += ev.score * w
             den += w
         return round(num / den, 2) if den else 50.0
 
-    def _direction(self, composite: float) -> Decision:
-        """Map composite score to direction, applying regime threshold shifts."""
-        long_thr  = self._thresholds.long_above
-        short_thr = self._thresholds.short_below
+    def _direction(
+        self,
+        composite: float,
+        *,
+        retail_surcharge: float = 0.0,
+    ) -> Decision:
+        """Map composite score to direction, applying regime threshold shifts.
+
+        Research #4 (Gao et al.): retail-attention-driven momentum gets an extra
+        +surcharge on the entry threshold. These setups are exploitable intraday
+        (we're already day-trade-only) but require higher conviction to enter.
+        """
+        long_thr  = self._thresholds.long_above  + retail_surcharge
+        short_thr = self._thresholds.short_below - retail_surcharge
         if self._regime is not None:
             long_thr  += self._regime.long_delta
             short_thr += self._regime.short_delta

@@ -1,4 +1,4 @@
-"""Centralised configuration — reads from environment / .env file."""
+"""Centralised configuration -- reads from environment / .env file."""
 from __future__ import annotations
 
 import os
@@ -23,16 +23,11 @@ def _env_bool(key: str, default: bool = False) -> bool:
 
 @dataclass(slots=True)
 class AgentWeights:
-    """Relative influence of each directional agent on the composite score.
-
-    Risk operates as a veto gate, not part of the blend.
-    Set liquid=0 or social=0 to disable those agents.
-    """
     fundamental: float = 0.20
     vision:      float = 0.15
     technical:   float = 0.35
-    liquid:      float = 0.15   # Liquid positioning/funding
-    social:      float = 0.15   # AI4Trade community sentiment
+    liquid:      float = 0.15
+    social:      float = 0.15
 
     def as_map(self) -> Mapping[str, float]:
         raw = {
@@ -65,38 +60,47 @@ class DecisionThresholds:
 
 
 @dataclass(slots=True)
+class ScannerConfig:
+    enabled:         bool  = field(default_factory=lambda: _env_bool("SCANNER_ENABLED", True))
+    top_n:           int   = field(default_factory=lambda: int(_env_float("SCANNER_TOP_N", 20)))
+    min_price:       float = field(default_factory=lambda: _env_float("SCANNER_MIN_PRICE", 5.0))
+    max_price:       float = field(default_factory=lambda: _env_float("SCANNER_MAX_PRICE", 2000.0))
+    min_volume:      int   = field(default_factory=lambda: int(_env_float("SCANNER_MIN_VOLUME", 500000)))
+    min_change_pct:  float = field(default_factory=lambda: _env_float("SCANNER_MIN_CHANGE_PCT", 0.5))
+    prefilter_min:   float = field(default_factory=lambda: _env_float("SCANNER_PREFILTER_MIN", 45.0))
+    prefilter_max:   float = field(default_factory=lambda: _env_float("SCANNER_PREFILTER_MAX", 55.0))
+    prefilter_top_n: int   = field(default_factory=lambda: int(_env_float("SCANNER_PREFILTER_TOP_N", 12)))
+
+
+@dataclass(slots=True)
 class Settings:
     run_mode: RunMode = field(default_factory=lambda: RunMode(_env("RUN_MODE", "backtest")))
 
-    # Alpaca
     alpaca_key_id: str  = field(default_factory=lambda: _env("ALPACA_API_KEY_ID"))
     alpaca_secret: str  = field(default_factory=lambda: _env("ALPACA_API_SECRET"))
     alpaca_paper:  bool = field(default_factory=lambda: _env_bool("ALPACA_PAPER", True))
 
-    # IBKR
     ibkr_host:      str = field(default_factory=lambda: _env("IBKR_HOST", "127.0.0.1"))
     ibkr_port:      int = field(default_factory=lambda: int(_env("IBKR_PORT", "7497")))
     ibkr_client_id: int = field(default_factory=lambda: int(_env("IBKR_CLIENT_ID", "1")))
 
-    # Liquid broker
     use_liquid_broker: bool = field(default_factory=lambda: _env_bool("USE_LIQUID_BROKER", False))
     liquid_api_key:    str  = field(default_factory=lambda: _env("LIQUID_API_KEY"))
 
-    # AI4Trade social platform
     ai4trade_email:    str  = field(default_factory=lambda: _env("AI4TRADE_EMAIL"))
     ai4trade_password: str  = field(default_factory=lambda: _env("AI4TRADE_PASSWORD"))
     ai4trade_bot_name: str  = field(default_factory=lambda: _env("AI4TRADE_BOT_NAME", "tradingbot2026"))
     ai4trade_publish:  bool = field(default_factory=lambda: _env_bool("AI4TRADE_PUBLISH", True))
 
-    # News + LLM
     news_base_url:     str  = field(default_factory=lambda: _env("NEWS_BASE_URL", "https://www.polistock.app/"))
     news_api_key:      str  = field(default_factory=lambda: _env("NEWS_API_KEY"))
     anthropic_api_key: str  = field(default_factory=lambda: _env("ANTHROPIC_API_KEY"))
     llm_model:         str  = field(default_factory=lambda: _env("LLM_MODEL", "claude-sonnet-4-6"))
 
-    weights:    AgentWeights      = field(default_factory=AgentWeights)
-    risk:       RiskConfig        = field(default_factory=RiskConfig)
+    weights:    AgentWeights       = field(default_factory=AgentWeights)
+    risk:       RiskConfig         = field(default_factory=RiskConfig)
     thresholds: DecisionThresholds = field(default_factory=DecisionThresholds)
+    scanner:    ScannerConfig      = field(default_factory=ScannerConfig)
 
 
 def load_settings() -> Settings:
