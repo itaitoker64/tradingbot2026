@@ -29,3 +29,18 @@ def volume_dir() -> Optional[Path]:
     d = Path(raw)
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def data_dir() -> Path:
+    """THE runtime data directory — volume-backed when attached, repo-local otherwise.
+
+    Every reader/writer of runtime state (strategy_weights.json, trade_mode.json,
+    broker_mode.json, learning history, ...) must resolve paths through this
+    function. Two components resolving the same filename through different rules
+    caused a split-brain on Railway: the optimizer wrote tuned params to the
+    volume while the RiskAgent read the repo-relative copy and never saw them.
+    """
+    vol = volume_dir()
+    d = (vol / "data") if vol else (Path(__file__).parent.parent / "data")
+    d.mkdir(parents=True, exist_ok=True)
+    return d

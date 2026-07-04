@@ -57,7 +57,8 @@ from execution.portfolio_manager import PortfolioManager  # noqa: E402
 
 # Runtime broker selection written by the dashboard (/api/broker-mode). Read on
 # every session (re)start so the toggle takes effect without editing .env.
-_BROKER_MODE_FILE = Path(__file__).parent / "data" / "broker_mode.json"
+from core.paths import data_dir as _data_dir  # noqa: E402
+_BROKER_MODE_FILE = _data_dir() / "broker_mode.json"
 
 
 def active_broker(settings: Settings) -> str:
@@ -150,6 +151,9 @@ def build_manager(
         decision_agent=DecisionAgent(
             gemini_api_key=settings.gemini_api_key,
         ) if include_decision_agent else None,
+        # Live runners must not forget the daily kill-switch across restarts.
+        # Backtests never call _check_daily_loss, so this is inert for them.
+        persist_state=True,
     )
 
 
@@ -183,6 +187,12 @@ async def eod_flatten_loop(broker: BaseBroker, settings: Settings) -> None:
     """
     if not settings.eod_flatten:
         logger.info("EOD flatten disabled (EOD_FLATTEN=false)")
+        return
+    if os.environ.get("ALLOW_OVERNIGHT", "").lower() in ("1", "true", "yes"):
+        # The EOD position review (api_server) may deliberately hold positions
+        # overnight; flattening here would silently override those decisions.
+        logger.warning("EOD flatten disabled: ALLOW_OVERNIGHT=true — the EOD "
+                       "position review decides what stays open")
         return
 
     flattened_on = None

@@ -3,7 +3,6 @@ import NextAuth from 'next-auth'
 import Credentials from 'next-auth/providers/credentials'
 import bcrypt from 'bcryptjs'
 import { prisma } from '@/lib/prisma'
-import { decrypt } from '@/lib/crypto'
 import { authConfig } from './auth.config'
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -25,15 +24,39 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // response time doesn't leak whether the email is registered.
         const DUMMY_HASH = '$2a$10$CwTycUXWue0Thq9StjUM0uJ8B9d.bHbR0bM4F.RnXi7B22.HEZk7C'
         const valid = await bcrypt.compare(password, user?.passwordHash ?? DUMMY_HASH)
-        if (!user || !valid) return null
+
+        let mustChangePassword = user?.mustChangePassword ?? false
+
+        // Temporary password (forgot-password flow): single-use and expiring.
+        // On success it PROMOTES to the real hash and forces a change — the
+        // owner's original password stays valid until the temp one is used.
+        if (user && !valid && user.tempPasswordHash && user.tempPasswordAt) {
+          const TEMP_TTL_MS = 60 * 60 * 1000 // 1 hour
+          const fresh = Date.now() - user.tempPasswordAt.getTime() <= TEMP_TTL_MS
+          const tempValid = await bcrypt.compare(password, user.tempPasswordHash)
+          if (fresh && tempValid) {
+            await prisma.user.update({
+              where: { id: user.id },
+              data: {
+                passwordHash:       user.tempPasswordHash,
+                tempPasswordHash:   null,
+                tempPasswordAt:     null,
+                mustChangePassword: true,
+              },
+            })
+            mustChangePassword = true
+          } else {
+            return null
+          }
+        } else if (!user || !valid) {
+          return null
+        }
 
         return {
           id:                 user.id,
           email:              user.email,
-          alpacaKeyId:        decrypt(user.alpacaKeyId),
-          alpacaSecret:       decrypt(user.alpacaSecret),
           alpacaPaper:        user.alpacaPaper,
-          mustChangePassword: user.mustChangePassword,
+          mustChangePassword,
         }
       },
     }),

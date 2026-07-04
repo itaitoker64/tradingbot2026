@@ -2,17 +2,20 @@
  * POST /api/bot/execute
  *
  * Executes a trade recommendation. Strategy (in order):
- *  1. Submit bracket order directly to the signed-in user's Alpaca account
- *  2. Also notify bot server if it happens to be running (for its trade log)
- *  3. If Alpaca is unavailable, return a local paper order ID so UI never breaks
- *
- * This makes the execute flow completely independent of localhost:8000 being up.
+ *  1. Ask the bot's entry guards (circuit breaker / position / sector / beta
+ *     caps) BEFORE placing anything — a 409 blocks the order itself. If the
+ *     bot is unreachable the check is skipped (execute stays independent of
+ *     localhost:8000 being up).
+ *  2. Submit the bracket order to the signed-in user's Alpaca account. A
+ *     rejected order FAILS the request — no phantom "paper" fallback mixing
+ *     simulated trades into the real history.
+ *  3. Record the fill with the bot server (best-effort).
  */
 import { NextResponse }       from 'next/server'
 import { revalidatePath }      from 'next/cache'
 import { submitBracketOrder, getAccount } from '@/lib/alpaca'
 import { getAlpacaCreds }     from '@/lib/session'
-import { botPost }            from '@/lib/bot-api'
+import { botPost, botTryPost } from '@/lib/bot-api'
 import { sizePosition }       from '@/lib/risk'
 import type { ExecuteRequest, ExecuteResponse } from '@/types/trading'
 
@@ -112,11 +115,27 @@ export async function POST(req: Request) {
     )
   }
 
-  // -- 1. Submit to the signed-in user's Alpaca account
-  let orderId = `PAPER-${Date.now().toString(36).toUpperCase()}`
-  let message = ''
-  let alpacaSuccess = false
+  // -- 1. Bot entry guards BEFORE placing the order. A 409 means a risk gate
+  //       (circuit breaker, max positions, sector/beta cap, duplicate) says
+  //       no — block the real order, not just the bookkeeping afterwards.
+  //       null = bot unreachable → proceed (execute must not depend on it).
+  const guard = await botTryPost('/api/entry-check', {
+    ticker,
+    direction,
+    composite_score: body.composite_score ?? null,
+    beta:            (body as { beta?: number }).beta ?? null,
+  })
+  if (guard && guard.status === 409) {
+    const reason = guard.data?.detail ?? 'blocked by bot risk guards'
+    return NextResponse.json(
+      { success: false, order_id: '', qty: 0, message: `Trade blocked: ${reason}` },
+      { status: 409 },
+    )
+  }
 
+  // -- 2. Submit to the signed-in user's Alpaca account. Failure is failure:
+  //       no fake PAPER order id — a rejected real-money order must be loud.
+  let orderId: string
   try {
     const alpacaOrder = await submitBracketOrder(creds, {
       symbol:      ticker,
@@ -124,15 +143,18 @@ export async function POST(req: Request) {
       qty,
       stop_loss,
       take_profit,
+      client_order_id: body.recommendation_id ? `dash-${body.recommendation_id}` : undefined,
     })
-    orderId       = alpacaOrder.id
-    message       = `${direction} ${qty}x ${ticker} submitted to Alpaca ${creds.paper ? 'Paper' : 'Live'} (order ${orderId})`
-    alpacaSuccess = true
+    orderId = alpacaOrder.id
   } catch (err: any) {
-    message = `${direction} ${qty}x ${ticker} recorded locally (Alpaca: ${err.message})`
+    return NextResponse.json(
+      { success: false, order_id: '', qty: 0, message: `Alpaca rejected the order: ${err.message}` },
+      { status: 502 },
+    )
   }
+  const message = `${direction} ${qty}x ${ticker} submitted to Alpaca ${creds.paper ? 'Paper' : 'Live'} (order ${orderId})`
 
-  // -- 2. Notify bot server (best-effort) — include resolved order_id, qty, and score
+  // -- 3. Record with the bot server (best-effort — the order stands either way)
   botPost('/api/execute', {
     ...body,
     qty,
@@ -140,17 +162,16 @@ export async function POST(req: Request) {
     score:    body.composite_score ?? null,
   }).catch(() => {})
 
-  // -- 3. Invalidate dashboard cache so positions refresh on next load
+  // -- 4. Invalidate dashboard cache so positions refresh on next load
   revalidatePath('/')
   revalidatePath('/history')
   revalidatePath('/pnl')
 
-  // -- 4. Always return success
   return NextResponse.json({
     success:  true,
     order_id: orderId,
     qty,
     message,
-    alpaca:   alpacaSuccess,
+    alpaca:   true,
   } as ExecuteResponse & { alpaca: boolean })
 }

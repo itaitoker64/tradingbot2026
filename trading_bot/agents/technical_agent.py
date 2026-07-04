@@ -876,11 +876,14 @@ class TechnicalAgent(BaseAgent):
 
             plus_dm  = (high - prev_high).clip(lower=0)
             minus_dm = (prev_low - low).clip(lower=0)
-            # When both are positive, keep only the larger one
-            mask = plus_dm <= minus_dm
-            plus_dm[mask]  = 0.0
-            mask2 = minus_dm <= plus_dm
-            minus_dm[mask2] = 0.0
+            # Wilder's rule: keep only the larger of +DM/-DM per bar; on a tie
+            # both are zero. Decide from the ORIGINAL values — zeroing plus_dm
+            # first and then comparing against the mutated series kept -DM on
+            # ties instead of dropping both.
+            keep_plus  = plus_dm > minus_dm
+            keep_minus = minus_dm > plus_dm
+            plus_dm  = plus_dm.where(keep_plus, 0.0)
+            minus_dm = minus_dm.where(keep_minus, 0.0)
 
             tr = pd.concat([
                 (high - low),

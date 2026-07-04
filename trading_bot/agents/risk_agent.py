@@ -22,7 +22,9 @@ from core.enums import AgentRole, Decision
 from core.freshness import bar_staleness
 from core.models import AgentEvaluation, AnalysisContext, RiskParameters
 
-_STRATEGY_WEIGHTS_FILE = Path(__file__).parent.parent / "data" / "strategy_weights.json"
+from core.paths import data_dir as _data_dir
+
+_STRATEGY_WEIGHTS_FILE = _data_dir() / "strategy_weights.json"
 
 logger = logging.getLogger(__name__)
 

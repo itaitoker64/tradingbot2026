@@ -6,16 +6,9 @@ declare module 'next-auth' {
       id: string
       mustChangePassword: boolean
     } & DefaultSession['user']
-    alpaca: {
-      keyId:  string
-      secret: string
-      paper:  boolean
-    }
   }
 
   interface User {
-    alpacaKeyId:        string
-    alpacaSecret:       string
     alpacaPaper:        boolean
     mustChangePassword: boolean
   }
@@ -26,10 +19,5 @@ declare module '@auth/core/jwt' {
   interface JWT {
     userId: string
     mustChangePassword: boolean
-    alpaca: {
-      keyId:  string
-      secret: string
-      paper:  boolean
-    }
   }
 }

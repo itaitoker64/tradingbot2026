@@ -4,8 +4,12 @@ pandas>=2.1
 numpy>=1.26
 aiohttp>=3.9
 
-# --- Technical analysis ---
-pandas-ta>=0.3.14b
+# --- Technical analysis (OPTIONAL) ---
+# pandas-ta releases were pulled from PyPI / require Python >= 3.12, which
+# breaks a fresh `pip install -r requirements.txt`. The TechnicalAgent already
+# degrades gracefully without it (candlestick patterns off, built-in RSI/MACD
+# fallbacks). Install manually if desired:
+#   pip install pandas-ta   # or pandas-ta-classic on older Pythons
 
 # --- Brokers / data ---
 alpaca-py>=0.21

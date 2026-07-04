@@ -169,6 +169,7 @@ class AlpacaBroker(BaseBroker):
                     "side":   p.get("side", ""),
                     "market_value": float(p.get("market_value", 0) or 0),
                     "unrealized_pl": float(p.get("unrealized_pl", 0) or 0),
+                    "avg_entry_price": float(p.get("avg_entry_price", 0) or 0),
                 }
                 for p in (data if isinstance(data, list) else [])
             ]
@@ -178,10 +179,22 @@ class AlpacaBroker(BaseBroker):
 
     async def get_open_orders(self) -> list[dict]:
         try:
-            data = await self._get(f"{self._base}/v2/orders", {"status": "open", "limit": 500})
+            # nested=true surfaces bracket child legs (TP/SL); "type" lets the
+            # breakeven lock find the stop leg to replace.
+            data = await self._get(f"{self._base}/v2/orders",
+                                   {"status": "open", "limit": 500, "nested": "true"})
+            flat: list[dict] = []
+            for o in (data if isinstance(data, list) else []):
+                flat.append(o)
+                flat.extend(o.get("legs") or [])
             return [
-                {"symbol": o.get("symbol", ""), "id": o.get("id", ""), "side": o.get("side", "")}
-                for o in (data if isinstance(data, list) else [])
+                {
+                    "symbol": o.get("symbol", ""),
+                    "id":     o.get("id", ""),
+                    "side":   o.get("side", ""),
+                    "type":   o.get("type", ""),
+                }
+                for o in flat
             ]
         except Exception as exc:
             logger.error("get_open_orders failed: %s", exc)
@@ -225,6 +238,30 @@ class AlpacaBroker(BaseBroker):
         except Exception as exc:
             logger.warning("cancel_order(%s) failed: %s", order_id, exc)
             return False
+
+    async def replace_order_stop(self, order_id: str, stop_price: float) -> Optional[str]:
+        """Replace an existing stop order's stop_price in place (PATCH /v2/orders).
+
+        Used by the breakeven lock: replacing keeps the shares reserved by the
+        bracket leg, whereas cancel+resubmit races the TP leg's share hold and
+        can leave the position with NO stop when the new order is rejected.
+        Returns the (possibly new) order_id, or None on failure.
+        """
+        import aiohttp
+        body = {"stop_price": str(round(stop_price, 2))}
+        session, owned = self._session_or_new()
+        try:
+            async with session.patch(f"{self._base}/v2/orders/{order_id}", json=body,
+                                     timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                return data.get("id", order_id)
+        except Exception as exc:
+            logger.warning("replace_order_stop(%s) failed: %s", order_id, exc)
+            return None
+        finally:
+            if owned:
+                await session.close()
 
     async def submit_stop(self, symbol: str, qty: int, side: str, stop_price: float) -> Optional[str]:
         """Submit a standalone stop order (replaces the bracket stop leg after breakeven lock).
@@ -286,6 +323,11 @@ class AlpacaBroker(BaseBroker):
             "order_class":   "bracket",
             "stop_loss":     {"stop_price": str(round(sl, 2))},
             "take_profit":   {"limit_price": str(round(tp, 2))},
+            # Client-side ID: if the POST times out after reaching Alpaca, the
+            # order can be found (GET /v2/orders:by_client_order_id) instead of
+            # existing untracked. Alpaca also rejects a duplicate ID, so an
+            # accidental re-submit cannot double-fill.
+            "client_order_id": f"tbot-{uuid.uuid4().hex[:20]}",
         }
 
         try:

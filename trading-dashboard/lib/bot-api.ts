@@ -49,6 +49,30 @@ export async function botPost<T>(path: string, body: unknown): Promise<T> {
   return res.json()
 }
 
+/**
+ * POST that reports the response instead of throwing on non-2xx.
+ * Returns null ONLY when the bot is unreachable (network error/timeout) —
+ * callers can then distinguish "bot rejected this" from "bot is offline".
+ */
+export async function botTryPost(
+  path: string,
+  body: unknown,
+): Promise<{ ok: boolean; status: number; data: any } | null> {
+  try {
+    const res = await fetch(`${BOT_URL}${path}`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', ...BOT_HEADERS },
+      body:    JSON.stringify(body),
+      signal:  abortAfter(BOT_TIMEOUT),
+      cache:   'no-store',
+    })
+    const data = await res.json().catch(() => null)
+    return { ok: res.ok, status: res.status, data }
+  } catch {
+    return null
+  }
+}
+
 export async function botPatch<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BOT_URL}${path}`, {
     method:  'PATCH',

@@ -20,7 +20,9 @@ from core.trade_memory import TradeMemory
 
 logger = logging.getLogger(__name__)
 
-_WEIGHTS_FILE = Path(__file__).parent.parent / "data" / "strategy_weights.json"
+from core.paths import data_dir as _data_dir
+
+_WEIGHTS_FILE = _data_dir() / "strategy_weights.json"
 
 _DIRECTIONAL_ROLES = {
     AgentRole.FUNDAMENTAL,

@@ -1,4 +1,5 @@
 // trading-dashboard/app/api/auth/signup/route.ts
+import { timingSafeEqual } from 'crypto'
 import { NextResponse } from 'next/server'
 import bcrypt from 'bcryptjs'
 import { prisma } from '@/lib/prisma'
@@ -8,9 +9,18 @@ interface SignupBody {
   email?:        string
   phone?:        string
   password?:     string
+  inviteCode?:   string
   alpacaKeyId?:  string
   alpacaSecret?: string
   alpacaPaper?:  boolean
+}
+
+function inviteCodeValid(code: string | undefined): boolean {
+  const expected = process.env.SIGNUP_INVITE_CODE ?? ''
+  if (!expected || !code) return false
+  const a = Buffer.from(code)
+  const b = Buffer.from(expected)
+  return a.length === b.length && timingSafeEqual(a, b)
 }
 
 export async function POST(req: Request) {
@@ -19,9 +29,23 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Invalid request body' }, { status: 400 })
   }
 
+  // Registration is invite-only: this dashboard controls a SHARED bot, so an
+  // open signup would hand shared controls (auto-execute toggle, broker
+  // switch, optimizer) to anyone with free Alpaca paper keys. Fail closed
+  // when no invite code is configured.
+  if (!process.env.SIGNUP_INVITE_CODE) {
+    return NextResponse.json(
+      { error: 'Sign-ups are disabled — SIGNUP_INVITE_CODE is not configured' },
+      { status: 403 },
+    )
+  }
+  if (!inviteCodeValid(body.inviteCode)) {
+    return NextResponse.json({ error: 'Invalid invite code' }, { status: 403 })
+  }
+
   const { phone, password, alpacaKeyId, alpacaSecret } = body
   const email = body.email?.trim()
-  if (!email || !phone || !password || !alpacaKeyId || !alpacaSecret) {
+  if (!email || !password || !alpacaKeyId || !alpacaSecret) {
     return NextResponse.json({ error: 'All fields are required' }, { status: 400 })
   }
 
@@ -72,7 +96,7 @@ export async function POST(req: Request) {
   await prisma.user.create({
     data: {
       email,
-      phone,
+      phone: phone || null,
       passwordHash,
       alpacaKeyId:  encrypt(alpacaKeyId),
       alpacaSecret: encrypt(alpacaSecret),

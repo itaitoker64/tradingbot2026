@@ -84,3 +84,30 @@ def test_halts_on_daily_loss_limit(trades_file):
     reason = api_server._check_circuit_breaker()
     assert reason is not None
     assert "Daily loss limit" in reason
+
+
+# ── manual reset acknowledgement ─────────────────────────────────────────────
+
+def test_manual_reset_acknowledges_past_losses(trades_file, tmp_path, monkeypatch):
+    """Reset must persist a cutoff — otherwise the breaker recomputes the
+    streak from history and re-halts on the next entry check (deadlock when
+    flat: entries blocked → no new trade can ever break the streak)."""
+    monkeypatch.setattr(api_server, "CB_RESET_FILE", tmp_path / "cb_reset.json")
+    _write(trades_file, [_closed(-5, _day(n)) for n in (3, 2, 1)])
+    assert api_server._check_circuit_breaker() is not None   # halted
+
+    api_server._save(api_server.CB_RESET_FILE,
+                     {"reset_at": date.today().isoformat() + "T23:59:59"})
+    assert api_server._consecutive_losses() == 0
+    assert api_server._check_circuit_breaker() is None       # stays clear
+
+
+def test_losses_after_reset_count_again(trades_file, tmp_path, monkeypatch):
+    monkeypatch.setattr(api_server, "CB_RESET_FILE", tmp_path / "cb_reset.json")
+    api_server._save(api_server.CB_RESET_FILE,
+                     {"reset_at": _day(2)})                  # acknowledged 2 days ago
+    _write(trades_file, [
+        _closed(-5, _day(3)),                                # before reset — ignored
+        _closed(-5, _day(1)),                                # after reset — counts
+    ])
+    assert api_server._consecutive_losses() == 1

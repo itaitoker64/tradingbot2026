@@ -144,3 +144,24 @@ def test_all_clear_returns_none(monkeypatch):
     with patch.object(_srv, "_check_circuit_breaker", return_value=None):
         reason = _srv._entry_guard_reason("AAPL", "LONG", 70.0, 1.0, [])
     assert reason is None
+
+
+# ── duplicate exposure ───────────────────────────────────────────────────────
+
+def test_duplicate_symbol_blocked_same_direction(monkeypatch):
+    monkeypatch.setattr(_srv, "MAX_OPEN_POSITIONS", 10)
+    with patch.object(_srv, "_check_circuit_breaker", return_value=None):
+        history = [_open_trade("NVDA", direction="LONG")]
+        reason = _srv._entry_guard_reason("NVDA", "LONG", 70.0, 1.0, history)
+    assert reason is not None
+    assert "already open" in reason.lower()
+
+
+def test_duplicate_symbol_blocked_opposite_direction(monkeypatch):
+    # An opposite-side bracket conflicts with the shares held by the first
+    # bracket's legs at Alpaca — either direction must be blocked.
+    monkeypatch.setattr(_srv, "MAX_OPEN_POSITIONS", 10)
+    with patch.object(_srv, "_check_circuit_breaker", return_value=None):
+        history = [_open_trade("NVDA", direction="LONG")]
+        reason = _srv._entry_guard_reason("nvda", "SHORT", 30.0, 1.0, history)
+    assert reason is not None

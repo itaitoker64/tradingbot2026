@@ -95,6 +95,15 @@ class BaseBroker(ABC):
         """
         return None
 
+    async def replace_order_stop(self, order_id: str, stop_price: float) -> Optional[str]:
+        """Replace an existing stop order's trigger price in place.
+
+        Returns the (possibly new) order_id, or None when unsupported/failed.
+        Brokers without in-place replacement return None; callers must then
+        leave the original stop untouched rather than cancel it.
+        """
+        return None
+
     # ── Order management ──────────────────────────────────────────────────────
 
     @abstractmethod

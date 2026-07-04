@@ -257,13 +257,17 @@ BROKER_MODE_FILE = DATA_DIR / "broker_mode.json" # alpaca/ibkr toggle (shared wi
 REJECT_LOG      = DATA_DIR / "risk_rejections.jsonl"
 SNAPSHOT_LOG    = DATA_DIR / "daily_snapshots.jsonl"
 AGENT_PERF_FILE = DATA_DIR / "agent_attribution.json"
-# WeightTuner output (online learning). These live at the repo-relative data dir
-# because that is where core.weight_tuner / PortfolioManager._live_weight read and
-# write them — keep this in lockstep with weight_tuner._WEIGHTS_FILE/_HISTORY_FILE.
-LEARNING_HISTORY_FILE = _HERE / "data" / "learning_history.jsonl"
-LEARNING_WEIGHTS_FILE = _HERE / "data" / "strategy_weights.json"
+# WeightTuner output (online learning). core.weight_tuner, PortfolioManager,
+# RiskAgent, and DecisionAgent all resolve strategy_weights.json through
+# core.paths.data_dir(), which is exactly DATA_DIR — one file everywhere,
+# volume-backed when a volume is attached (no more Railway split-brain).
+LEARNING_HISTORY_FILE = DATA_DIR / "learning_history.jsonl"
+LEARNING_WEIGHTS_FILE = WEIGHTS_FILE
 # Per-agent scorecard written by the strategy-improvement loop (served at /api/agent-scorecards).
-AGENT_SCORECARDS_FILE = _HERE / "data" / "agent_scorecards.json"
+AGENT_SCORECARDS_FILE = DATA_DIR / "agent_scorecards.json"
+# Circuit-breaker acknowledgement: losses closed at/before this timestamp are
+# excluded from the breaker's counters (written by /api/reset-circuit-breaker).
+CB_RESET_FILE = DATA_DIR / "circuit_breaker_reset.json"
 EARNINGS_CACHE: Dict[str, Any] = {"blacklist": set(), "updated_at": None}
 
 
@@ -412,7 +416,17 @@ def _kelly_qty(
         return 0
 
     b = reward_per_share / risk_per_share
-    p = min(max(composite_score / 100.0, 0.05), 0.95)
+    # Win probability: the composite is an UNCALIBRATED blend, so cap the
+    # optimism at 65%. Once a real track record exists (>=15 tuner updates),
+    # anchor p to the measured 30-trade win rate instead.
+    p = min(max(composite_score / 100.0, 0.05), 0.65)
+    try:
+        w = _load_weights()
+        measured = w.get("win_rate_30d")
+        if measured is not None and int(w.get("update_count", 0)) >= 15:
+            p = min(max(float(measured) / 100.0, 0.05), 0.75)
+    except Exception:
+        pass
     q = 1.0 - p
     kelly_f = (b * p - q) / b if b > 0 else 0.0
     if kelly_f <= 0:
@@ -484,11 +498,27 @@ def _save_weights(w: Dict[str, Any]) -> None:
 
 # === Account equity ===
 
+# Last VERIFIED equity reading (value, monotonic timestamp). Sync code that
+# cannot await a broker call (the circuit breaker) reads this instead of
+# fabricating an estimate. 0.0 = never verified.
+_EQUITY_CACHE: Dict[str, float] = {"value": 0.0, "ts": 0.0}
+_EQUITY_CACHE_MAX_AGE_S = 30 * 60  # a reading older than this is treated as unknown
+
+
+def _cached_equity() -> float:
+    """Most recent verified equity, or 0.0 when none is fresh enough."""
+    import time as _time
+    if _EQUITY_CACHE["value"] > 0 and _time.monotonic() - _EQUITY_CACHE["ts"] <= _EQUITY_CACHE_MAX_AGE_S:
+        return _EQUITY_CACHE["value"]
+    return 0.0
+
+
 async def _get_account_equity(session: aiohttp.ClientSession) -> float:
     """Return verified account equity, or 0.0 when unknown (fail closed).
 
     Never substitute fake equity — sizing code treats 0 as "do not size".
     """
+    import time as _time
     try:
         async with session.get(
             f"{_BROKER_BASE}/v2/account",
@@ -497,7 +527,11 @@ async def _get_account_equity(session: aiohttp.ClientSession) -> float:
         ) as r:
             if r.status == 200:
                 data = await r.json()
-                return float(data.get("equity") or data.get("cash") or 0.0)
+                equity = float(data.get("equity") or data.get("cash") or 0.0)
+                if equity > 0:
+                    _EQUITY_CACHE["value"] = equity
+                    _EQUITY_CACHE["ts"] = _time.monotonic()
+                return equity
             logger.error("Account equity fetch -> %s: %s", r.status, await r.text())
     except Exception as exc:
         logger.error("Could not fetch account equity — recs will be unsized: %s", exc)
@@ -1059,9 +1093,45 @@ def _reset_scan_stats_if_needed() -> None:
         })
 
 
+def _cb_reset_cutoff() -> str:
+    """ISO timestamp of the last manual circuit-breaker reset ('' when never).
+
+    Trades closed at/before this cutoff are excluded from the breaker's
+    counters — otherwise a manual reset is a no-op: the breaker recomputes the
+    loss streak from history and re-halts on the next entry attempt, which
+    (when flat) deadlocks trading until someone edits trades.json.
+    """
+    data = _load(CB_RESET_FILE, {})
+    return str(data.get("reset_at") or "") if isinstance(data, dict) else ""
+
+
+def _equity_baseline() -> float:
+    """Best VERIFIED equity for the daily-loss denominator (never fabricated).
+
+    Order: fresh broker reading (cache) → last EOD snapshot → conservative
+    $1,000 floor. The floor errs toward halting too early, never too late —
+    the opposite failure mode of the old |total_pnl|*3+1000 estimate, which
+    inflated with history until real 2% losses could no longer trip the halt.
+    """
+    equity = _cached_equity()
+    if equity > 0:
+        return equity
+    try:
+        lines = SNAPSHOT_LOG.read_text(encoding="utf-8").strip().splitlines()
+        for line in reversed(lines):
+            snap = json.loads(line)
+            val = float(snap.get("equity") or 0.0)
+            if val > 0:
+                return val
+    except Exception:
+        pass
+    return 1000.0
+
+
 def _daily_pnl_pct() -> float:
-    """Today's realized P&L as fraction of current equity (negative = loss)."""
+    """Today's realized P&L as fraction of verified equity (negative = loss)."""
     today = str(date.today())
+    cutoff = _cb_reset_cutoff()
     trades = _load(TRADES_FILE, [])
     if not isinstance(trades, list):
         return 0.0
@@ -1070,24 +1140,30 @@ def _daily_pnl_pct() -> float:
         if t.get("status") == "closed"
         and (t.get("closed_at") or "")[:10] == today
         and t.get("pnl") is not None
+        and (not cutoff or (t.get("closed_at") or "") > cutoff)
     ]
     if not today_trades:
         return 0.0
     total_pnl = sum(float(t["pnl"]) for t in today_trades)
-    # Use yesterday's equity as baseline (we don't have real-time equity here)
-    # Estimate from total account trades — minimum $1000 guard
-    all_pnl = sum(float(t.get("pnl", 0)) for t in trades if t.get("status") == "closed")
-    est_equity = max(abs(all_pnl) * 3 + 1000, 1000)  # conservative floor
-    return total_pnl / est_equity
+    return total_pnl / _equity_baseline()
 
 
 def _consecutive_losses() -> int:
-    """Count of most recent consecutive losing closed trades."""
+    """Count of most recent consecutive losing closed trades.
+
+    Trades closed at/before the last manual reset are excluded (acknowledged
+    losses must not re-trip the breaker).
+    """
+    cutoff = _cb_reset_cutoff()
     trades = _load(TRADES_FILE, [])
     if not isinstance(trades, list):
         return 0
     closed = sorted(
-        [t for t in trades if t.get("status") == "closed" and t.get("pnl") is not None],
+        [
+            t for t in trades
+            if t.get("status") == "closed" and t.get("pnl") is not None
+            and (not cutoff or (t.get("closed_at") or t.get("executed_at") or "") > cutoff)
+        ],
         key=lambda t: t.get("closed_at") or t.get("executed_at") or "",
         reverse=True,
     )
@@ -1957,6 +2033,15 @@ async def _trailing_stop_loop() -> None:
 
                 changed_ids: set = set()
                 for trade in open_trades:
+                    # SIMULATED trades only (PAPER-* / locally recorded). A real
+                    # Alpaca bracket manages its own stop; "closing" it here
+                    # would only flip the JSON record while the real position
+                    # stays open at the broker — untracked and unmanaged — and
+                    # would feed phantom exits into the circuit breaker and the
+                    # learning loop.
+                    order_id = str(trade.get("order_id") or "")
+                    if order_id and not order_id.startswith("PAPER-"):
+                        continue
                     ticker    = trade.get("ticker", "")
                     direction = trade.get("direction", "LONG")
                     snap      = snaps.get(ticker, {})
@@ -2021,8 +2106,38 @@ async def _trailing_stop_loop() -> None:
 # Position exit monitor helpers
 # ---------------------------------------------------------------------------
 
+async def _cancel_open_orders_for(session: aiohttp.ClientSession, ticker: str) -> None:
+    """Cancel all open orders on a symbol (bracket legs hold the shares —
+    Alpaca rejects a position close while they're working)."""
+    try:
+        async with session.get(
+            f"{_BROKER_BASE}/v2/orders",
+            headers=_ALPACA_HEADERS,
+            params={"status": "open", "symbols": ticker, "limit": 100},
+            timeout=aiohttp.ClientTimeout(total=8),
+        ) as r:
+            orders = await r.json() if r.status == 200 else []
+        for o in orders if isinstance(orders, list) else []:
+            oid = o.get("id")
+            if not oid:
+                continue
+            async with session.delete(
+                f"{_BROKER_BASE}/v2/orders/{oid}",
+                headers=_ALPACA_HEADERS,
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                if r.status not in (200, 204):
+                    logger.warning("Cancel order %s (%s) -> HTTP %s", oid, ticker, r.status)
+    except Exception as exc:
+        logger.warning("Cancel open orders for %s failed: %s", ticker, exc)
+
+
 async def _close_position_via_alpaca(session: aiohttp.ClientSession, ticker: str) -> bool:
-    """Close a single position via Alpaca DELETE /v2/positions/{symbol}."""
+    """Close a single position via Alpaca DELETE /v2/positions/{symbol}.
+
+    Cancels the symbol's open orders first — the shares are otherwise held by
+    the bracket's TP/SL legs and the liquidation is rejected."""
+    await _cancel_open_orders_for(session, ticker)
     try:
         async with session.delete(
             f"{_BROKER_BASE}/v2/positions/{ticker}",
@@ -2410,10 +2525,12 @@ async def _background_loop() -> None:
         except Exception as exc:
             consecutive_errors += 1
             _scan_stats["scan_errors"] += 1
+            backoff = min(300, 30 * 2 ** min(consecutive_errors, 4))
             logger.error(
                 "Scanner error #%d (backoff=%ds): %s",
-                consecutive_errors, wait, exc,
+                consecutive_errors, backoff, exc,
             )
+            await asyncio.sleep(backoff)
 
         try:
             async with aiohttp.ClientSession(
@@ -2800,6 +2917,15 @@ def _entry_guard_reason(ticker: str, direction: str,
                        {"circuit_breaker_reason": cb_reason})
         return cb_reason
 
+    # Duplicate-exposure guard: one open trade per symbol, EITHER direction.
+    # An opposite-side bracket on an existing position conflicts with the
+    # shares already held by the first bracket's legs at Alpaca.
+    if any(t.get("status") == "open"
+           and str(t.get("ticker", "")).upper() == ticker.upper()
+           for t in history):
+        _log_rejection(ticker, "duplicate_position", composite_score or 0.0, {})
+        return f"Position already open in {ticker.upper()}"
+
     open_count = len([t for t in history if t.get("status") == "open"])
     if open_count >= MAX_OPEN_POSITIONS:
         _log_rejection(ticker, "max_positions", composite_score or 0.0,
@@ -2886,6 +3012,30 @@ async def _record_executed_trade(body: ExecuteBody) -> tuple[Optional[str], Opti
     return None, trade
 
 
+class EntryCheckBody(BaseModel):
+    ticker:          str
+    direction:       Literal["LONG", "SHORT"]
+    composite_score: Optional[float] = None
+    beta:            Optional[float] = None
+
+
+@app.post("/api/entry-check", dependencies=[Depends(_verify_bot_secret)])
+async def entry_check(body: EntryCheckBody):
+    """Guards-only pre-trade check (no recording, no side effects).
+
+    The dashboard calls this BEFORE placing a real Alpaca order so the
+    circuit-breaker / position / sector / beta gates can block the order
+    itself, not just the bookkeeping afterwards.
+    """
+    history = _load(HISTORY_FILE, [])
+    history = history if isinstance(history, list) else []
+    reason = _entry_guard_reason(body.ticker, body.direction,
+                                 body.composite_score, body.beta, history)
+    if reason:
+        raise HTTPException(status_code=409, detail=reason)
+    return {"status": "clear"}
+
+
 @app.post("/api/execute", dependencies=[Depends(_verify_bot_secret)])
 async def execute_trade(body: ExecuteBody):
     reason, trade = await _record_executed_trade(body)
@@ -2946,7 +3096,8 @@ def _auto_exec_candidates(recs: list, now_iso: str) -> list:
 
 async def _submit_paper_bracket(session: aiohttp.ClientSession, *, ticker: str,
                                 direction: str, qty: int, stop_loss: float,
-                                take_profit: float) -> Optional[str]:
+                                take_profit: float,
+                                client_order_id: Optional[str] = None) -> Optional[str]:
     """Submit a paper bracket order to Alpaca. Returns the order_id or None.
 
     Mirrors the shape used by the PC broker and the dashboard (market entry,
@@ -2972,6 +3123,10 @@ async def _submit_paper_bracket(session: aiohttp.ClientSession, *, ticker: str,
         "stop_loss":     {"stop_price":  str(round(stop_loss, 2))},
         "take_profit":   {"limit_price": str(round(take_profit, 2))},
     }
+    if client_order_id:
+        # Alpaca enforces client_order_id uniqueness — a duplicate submit for
+        # the same recommendation is rejected server-side (idempotency).
+        order["client_order_id"] = client_order_id[:48]
     try:
         async with session.post(f"{_BROKER_BASE}/v2/orders", headers=_ALPACA_HEADERS,
                                 json=order, timeout=aiohttp.ClientTimeout(total=15)) as r:
@@ -3020,9 +3175,11 @@ async def _run_auto_executor() -> int:
                 logger.info("Auto-exec skip %s %s: %s", direction, ticker, reason)
                 continue
 
+            rec_id = str(rec.get("id") or "")
             order_id = await _submit_paper_bracket(
                 session, ticker=ticker, direction=direction, qty=qty,
                 stop_loss=float(risk["stop_loss"]), take_profit=float(risk["take_profit"]),
+                client_order_id=f"autoexec-{rec_id}" if rec_id else None,
             )
             if not order_id:
                 continue
@@ -3085,14 +3242,21 @@ async def trigger_scan():
 
 @app.post("/api/reset-circuit-breaker", dependencies=[Depends(_verify_bot_secret)])
 async def reset_circuit_breaker():
-    """Manually reset the circuit breaker after reviewing losses."""
+    """Manually reset the circuit breaker after reviewing losses.
+
+    Persists an acknowledgement cutoff: losses closed at/before now no longer
+    count toward the loss streak or today's realized-loss total. Without this
+    the breaker recomputes from history and re-halts on the next entry check.
+    """
+    now_iso = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    _save(CB_RESET_FILE, {"reset_at": now_iso})
     _circuit_breaker.update({
         "halted":    False,
         "reason":    None,
         "halted_at": None,
     })
-    logger.info("Circuit breaker manually reset")
-    return {"status": "reset", "timestamp": datetime.now(timezone.utc).replace(tzinfo=None).isoformat()}
+    logger.info("Circuit breaker manually reset — losses before %s acknowledged", now_iso)
+    return {"status": "reset", "timestamp": now_iso}
 
 
 @app.get("/api/rejections", dependencies=[Depends(_verify_bot_secret)])

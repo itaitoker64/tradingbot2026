@@ -2,14 +2,17 @@
  * GET  /api/trade-mode  → current execution mode { auto_execute }
  * POST /api/trade-mode  → toggle auto-execute { auto_execute: boolean }
  *
- * Source of truth: Neon DB (survives bot restarts and works across devices).
- * On every GET we also sync the DB value to the bot so it stays in sync
- * even after a Railway restart that wiped trade_mode.json.
+ * The BOT's file is the source of truth for what the bot actually does — it
+ * is shared state, not per-user state. GET is strictly read-only: the old
+ * behaviour of syncing the requesting user's personal DB value to the bot on
+ * every page load let ANY signed-in account silently overwrite the shared
+ * toggle (user B loading the dashboard disarmed — or armed — the bot user A
+ * configured). Only an explicit POST may change the bot.
  */
 import { NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
-import { botPost } from '@/lib/bot-api'
+import { botGet, botPost } from '@/lib/bot-api'
 
 export const dynamic = 'force-dynamic'
 
@@ -17,17 +20,17 @@ export async function GET() {
   const session = await auth()
   if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const user = await prisma.user.findUnique({
-    where:  { id: session.user.id },
-    select: { autoExecute: true },
-  })
-  const autoExecute = user?.autoExecute ?? false
-
-  // Sync to bot in the background so the file stays correct after restarts.
-  // Fire-and-forget — we don't block the response on bot availability.
-  botPost('/api/trade-mode', { auto_execute: autoExecute }).catch(() => {})
-
-  return NextResponse.json({ auto_execute: autoExecute })
+  try {
+    const data = await botGet<{ auto_execute?: boolean }>('/api/trade-mode')
+    return NextResponse.json({ auto_execute: !!data.auto_execute })
+  } catch {
+    // Bot offline — fall back to this user's stored preference for display only.
+    const user = await prisma.user.findUnique({
+      where:  { id: session.user.id },
+      select: { autoExecute: true },
+    })
+    return NextResponse.json({ auto_execute: user?.autoExecute ?? false, bot_offline: true })
+  }
 }
 
 export async function POST(req: Request) {
@@ -41,14 +44,13 @@ export async function POST(req: Request) {
 
   const autoExecute = !!body.auto_execute
 
-  // Save to DB — the durable source of truth.
+  // Remember the user's preference (display fallback when the bot is offline).
   await prisma.user.update({
     where: { id: session.user.id },
     data:  { autoExecute },
   })
 
-  // Also push to bot. If bot is offline this is best-effort;
-  // the next GET will re-sync once it comes back online.
+  // Push the explicit change to the bot.
   botPost('/api/trade-mode', { auto_execute: autoExecute }).catch(() => {})
 
   return NextResponse.json({ status: 'ok', auto_execute: autoExecute })

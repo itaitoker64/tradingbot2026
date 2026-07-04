@@ -56,11 +56,12 @@ BROKER_SWITCH_POLL_S   = int(os.environ.get("BROKER_SWITCH_POLL_S",   "10"))
 
 # Weights file written by api_server's self-tuner — we read it hourly and
 # apply ATR/threshold updates to the live pm without restarting.
-_WEIGHTS_FILE = Path(__file__).parent / "data" / "strategy_weights.json"
+from core.paths import data_dir as _data_dir  # noqa: E402
+_WEIGHTS_FILE = _data_dir() / "strategy_weights.json"
 
 # Auto-execute toggle written by the dashboard (/api/trade-mode). Read every
 # evaluation so the switch takes effect within one scan, no redeploy needed.
-_TRADE_MODE_FILE = Path(__file__).parent / "data" / "trade_mode.json"
+_TRADE_MODE_FILE = _data_dir() / "trade_mode.json"
 
 
 def _auto_execute_enabled() -> bool:
@@ -262,6 +263,12 @@ async def strategy_refresh_loop(pm: PortfolioManager, *, interval_min: int) -> N
             if not _WEIGHTS_FILE.exists():
                 continue
             w = json.loads(_WEIGHTS_FILE.read_text())
+            # Same gate as RiskAgent._effective_atr_multiples: tuned params only
+            # apply after a DELIBERATE activation (optimizer Apply). Without
+            # this, the self-tuner's passive refinements would step live sizing
+            # away from the configured baseline through the back door.
+            if not w.get("live_tuning_active"):
+                continue
             stop_m = w.get("atr_stop_multiple")
             tp_m   = w.get("atr_target_multiple")
             changed = False
@@ -338,38 +345,44 @@ async def breakeven_lock_loop(broker: BaseBroker, pm: PortfolioManager) -> None:
                     continue
 
                 unreal = float(pos.get("unrealized_pl", 0))
-                cost   = float(pos.get("market_value", 0)) - unreal  # approximate cost basis
-                entry  = cost / qty if qty > 0 else 0
+                # avg_entry_price is broker-reported and works for BOTH sides;
+                # the old (market_value - unreal)/qty derivation went negative
+                # for shorts, so short positions never got breakeven protection.
+                entry = float(pos.get("avg_entry_price", 0) or 0)
                 if entry <= 0:
                     continue
 
                 # Lock condition: unrealized P&L ≥ 1× stop-distance per share
+                # (unrealized_pl is signed profit for both long and short).
                 pl_per_share = unreal / qty
-                if (side == "long"  and pl_per_share < stop_dist):
-                    continue
-                if (side == "short" and pl_per_share < stop_dist):
+                if pl_per_share < stop_dist:
                     continue
 
                 lock_price = round(entry, 2)
                 if already_locked and abs(already_locked - lock_price) < 0.01:
                     continue  # already locked at this price
 
-                # Cancel the bracket's stop child order
+                # Move the bracket's stop leg to breakeven IN PLACE. Replacing
+                # keeps the shares reserved by the leg; cancel+resubmit races
+                # the TP leg's share hold and can strip the position of any
+                # stop when the fresh order is rejected. If the broker can't
+                # replace, leave the original stop untouched.
                 for o in stop_orders.get(sym, []):
                     otype = o.get("type", "")
                     if otype in ("stop", "stop_limit") and o.get("id"):
-                        await broker.cancel_order(o["id"])
-                        logger.info("breakeven lock: cancelled stop order %s for %s", o["id"], sym)
-
-                # Submit a new stop at the entry price (breakeven)
-                exit_side = "sell" if side == "long" else "buy"
-                new_id = await broker.submit_stop(sym, qty, exit_side, lock_price)
-                if new_id:
-                    _locked[sym] = lock_price
-                    logger.info(
-                        "BREAKEVEN LOCK %s: %.2f PnL/share ≥ ATR_stop %.2f → stop@entry %.2f",
-                        sym, pl_per_share, stop_dist, lock_price,
-                    )
+                        new_id = await broker.replace_order_stop(o["id"], lock_price)
+                        if new_id:
+                            _locked[sym] = lock_price
+                            logger.info(
+                                "BREAKEVEN LOCK %s: %.2f PnL/share ≥ ATR_stop %.2f → stop@entry %.2f",
+                                sym, pl_per_share, stop_dist, lock_price,
+                            )
+                        else:
+                            logger.warning(
+                                "breakeven lock: could not replace stop %s for %s — original stop kept",
+                                o["id"], sym,
+                            )
+                        break
 
         except Exception:
             logger.exception("breakeven_lock_loop error")

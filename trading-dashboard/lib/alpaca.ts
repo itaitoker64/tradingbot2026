@@ -176,6 +176,10 @@ export interface BracketOrderRequest {
   qty:         number
   stop_loss:   number
   take_profit: number
+  // Optional idempotency key. Alpaca rejects a duplicate client_order_id, so
+  // deriving it from the recommendation id makes double-submits (rapid
+  // clicks landing on different serverless instances) fail server-side.
+  client_order_id?: string
 }
 
 export interface AlpacaOrderResponse {
@@ -189,7 +193,7 @@ export interface AlpacaOrderResponse {
 }
 
 export async function submitBracketOrder(creds: AlpacaCreds, req: BracketOrderRequest): Promise<AlpacaOrderResponse> {
-  const body = {
+  const body: Record<string, unknown> = {
     symbol:        req.symbol,
     qty:           String(req.qty),
     side:          req.side,
@@ -199,6 +203,7 @@ export async function submitBracketOrder(creds: AlpacaCreds, req: BracketOrderRe
     stop_loss:     { stop_price:  req.stop_loss.toFixed(2) },
     take_profit:   { limit_price: req.take_profit.toFixed(2) },
   }
+  if (req.client_order_id) body.client_order_id = req.client_order_id.slice(0, 48)
 
   const res = await fetch(`${brokerBase(creds)}/v2/orders`, {
     method:  'POST',

@@ -8,7 +8,8 @@ vi.mock('@/lib/alpaca', () => ({
   submitBracketOrder: vi.fn(),
 }))
 vi.mock('@/lib/bot-api', () => ({
-  botPost: vi.fn().mockResolvedValue(undefined),
+  botPost:    vi.fn().mockResolvedValue(undefined),
+  botTryPost: vi.fn().mockResolvedValue(null),   // default: bot unreachable
 }))
 vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
@@ -16,6 +17,7 @@ vi.mock('next/cache', () => ({
 
 import { getAlpacaCreds } from '@/lib/session'
 import { getAccount, submitBracketOrder } from '@/lib/alpaca'
+import { botTryPost } from '@/lib/bot-api'
 import { POST } from '@/app/api/bot/execute/route'
 
 const CREDS = { keyId: 'k', secret: 's', paper: true }
@@ -78,5 +80,57 @@ describe('POST /api/bot/execute', () => {
     expect(res.status).toBe(401)
     expect(data.success).toBe(false)
     expect(submitBracketOrder).not.toHaveBeenCalled()
+  })
+
+  it('blocks the order when the bot entry guards reject (409)', async () => {
+    vi.mocked(getAccount).mockResolvedValue({ equity: '10000' } as any)
+    vi.mocked(botTryPost).mockResolvedValue({
+      ok: false, status: 409, data: { detail: 'Max open positions (5) reached' },
+    })
+
+    const res  = await POST(makeRequest({ ...BASE_BODY, recommendation_id: 'r-guarded' }))
+    const data = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(data.success).toBe(false)
+    expect(data.message).toMatch(/max open positions/i)
+    expect(submitBracketOrder).not.toHaveBeenCalled()
+  })
+
+  it('proceeds when the bot is unreachable (guard check is best-effort)', async () => {
+    vi.mocked(getAccount).mockResolvedValue({ equity: '10000' } as any)
+    vi.mocked(botTryPost).mockResolvedValue(null)
+    vi.mocked(submitBracketOrder).mockResolvedValue({ id: 'order-2' } as any)
+
+    const res  = await POST(makeRequest({ ...BASE_BODY, recommendation_id: 'r-bot-down' }))
+    const data = await res.json()
+
+    expect(data.success).toBe(true)
+    expect(data.order_id).toBe('order-2')
+  })
+
+  it('fails loudly when Alpaca rejects — no phantom PAPER fallback', async () => {
+    vi.mocked(getAccount).mockResolvedValue({ equity: '10000' } as any)
+    vi.mocked(submitBracketOrder).mockRejectedValue(new Error('insufficient buying power'))
+
+    const res  = await POST(makeRequest({ ...BASE_BODY, recommendation_id: 'r-alpaca-fail' }))
+    const data = await res.json()
+
+    expect(res.status).toBe(502)
+    expect(data.success).toBe(false)
+    expect(data.order_id).toBe('')
+    expect(data.message).toMatch(/insufficient buying power/)
+  })
+
+  it('passes an idempotent client_order_id derived from the recommendation', async () => {
+    vi.mocked(getAccount).mockResolvedValue({ equity: '10000' } as any)
+    vi.mocked(submitBracketOrder).mockResolvedValue({ id: 'order-3' } as any)
+
+    await POST(makeRequest({ ...BASE_BODY, recommendation_id: 'r-idem' }))
+
+    expect(submitBracketOrder).toHaveBeenCalledWith(
+      CREDS,
+      expect.objectContaining({ client_order_id: 'dash-r-idem' }),
+    )
   })
 })

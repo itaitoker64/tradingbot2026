@@ -65,6 +65,10 @@ class RegimeSnapshot:
     qqq_vs_vwap:    Optional[float]
     qqq_day_chg:    Optional[float]
     rationale:      str
+    # True when vix_level is the VIXY ETF *price* proxy, which trades on a
+    # completely different scale than the index. Consumers applying index-level
+    # cutoffs (e.g. "VIX>30 → smaller size") MUST skip proxy readings.
+    vix_is_proxy:   bool = False
 
     @property
     def reasoning(self) -> dict:
@@ -264,6 +268,7 @@ async def detect_regime(broker) -> RegimeSnapshot:
         spy_vs_vwap=spy_vs_vwap, spy_day_chg=spy_day_chg,
         qqq_vs_vwap=qqq_vs_vwap, qqq_day_chg=qqq_day_chg,
         rationale=rationale,
+        vix_is_proxy=(vix_thresholds is _VIXY_THRESHOLDS),
     )
     logger.info("REGIME: %s | %s", regime.value.upper(), rationale)
     return snap

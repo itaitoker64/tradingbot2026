@@ -16,6 +16,7 @@ export default function LoginPage() {
   const [alpacaKeyId, setAlpacaKeyId]   = useState('')
   const [alpacaSecret, setAlpacaSecret] = useState('')
   const [alpacaPaper, setAlpacaPaper]   = useState(true)
+  const [inviteCode, setInviteCode]     = useState('')
   const [error, setError]     = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
@@ -51,7 +52,7 @@ export default function LoginPage() {
       const res = await fetch('/api/auth/signup', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ email, password, alpacaKeyId, alpacaSecret, alpacaPaper }),
+        body:    JSON.stringify({ email, password, alpacaKeyId, alpacaSecret, alpacaPaper, inviteCode }),
       })
       const data = await res.json()
       if (!res.ok) {
@@ -141,6 +142,10 @@ export default function LoginPage() {
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
+              <input
+                type="text" required placeholder="Invite code" value={inviteCode} onChange={e => setInviteCode(e.target.value)}
+                className="w-full rounded-lg border border-bg-border bg-bg-base px-3 py-1.5 text-sm text-primary placeholder:text-muted"
+              />
               <div className="grid grid-cols-2 gap-2">
                 <input
                   type="text" required placeholder="Alpaca Key ID" value={alpacaKeyId} onChange={e => setAlpacaKeyId(e.target.value)}

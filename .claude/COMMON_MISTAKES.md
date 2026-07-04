@@ -37,3 +37,17 @@ whether only c-ares is failing. (aiodns itself stays installed — ccxt needs it
 main.py and live_runner.py once had separate broker/agent construction — live
 mode silently lost regime gating and SPY relative strength. All composition
 lives in `trading_bot/bootstrap.py`; never duplicate it.
+
+## 8. Two resolvers for one runtime file = Railway split-brain
+strategy_weights.json was once resolved volume-aware in api_server but
+repo-relative in the agents — on Railway the optimizer "Apply" wrote params
+nobody read, and tuner output was wiped every deploy. EVERY runtime data file
+(weights, trade_mode, broker_mode, learning history, kill_switch) must resolve
+through `core.paths.data_dir()` — never build `.../data/...` paths by hand.
+
+## 9. "Simulated" loops must check order_id before touching trades.json
+The trailing-stop loop once marked REAL Alpaca bracket trades closed in
+trades.json (the real position stayed open at the broker), feeding phantom
+exits into the circuit breaker and the learning loop. Any loop that closes or
+mutates trades must first check `order_id.startswith("PAPER-")` — real
+positions are managed by their brackets / the exit monitor, not by JSON edits.

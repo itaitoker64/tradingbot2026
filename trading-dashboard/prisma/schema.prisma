@@ -16,6 +16,11 @@ model User {
   alpacaSecret        String
   alpacaPaper         Boolean   @default(true)
   mustChangePassword  Boolean   @default(false)
+  // Temporary password issued by forgot-password. Lives NEXT TO the real
+  // hash (never replaces it) so an unauthenticated request can't lock the
+  // account's owner out. Single-use and time-limited.
+  tempPasswordHash    String?
+  tempPasswordAt      DateTime?
   autoExecute         Boolean   @default(false)
   createdAt           DateTime  @default(now())
   telegramChatId      String?

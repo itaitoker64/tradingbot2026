@@ -17,28 +17,23 @@ export const authConfig: NextAuthConfig = {
   },
   providers: [],
   callbacks: {
+    // NOTE: broker credentials deliberately do NOT ride in the JWT. They used
+    // to — which put the (decrypted) Alpaca secret inside a browser cookie on
+    // every request, decryptable by anyone holding AUTH_SECRET. Server code
+    // fetches and decrypts them from the DB per request (lib/session.ts).
     async jwt({ token, user, trigger, session }) {
       if (user) {
         token.userId = user.id as string
-        token.alpaca = {
-          keyId:  (user as unknown as { alpacaKeyId: string }).alpacaKeyId,
-          secret: (user as unknown as { alpacaSecret: string }).alpacaSecret,
-          paper:  (user as unknown as { alpacaPaper: boolean }).alpacaPaper,
-        }
         token.mustChangePassword = (user as unknown as { mustChangePassword: boolean }).mustChangePassword
       }
       if (trigger === 'update' && session?.mustChangePassword === false) {
         token.mustChangePassword = false
-      }
-      if (trigger === 'update' && session?.alpaca) {
-        token.alpaca = session.alpaca
       }
       return token
     },
     async session({ session, token }) {
       session.user.id = token.userId
       session.user.mustChangePassword = token.mustChangePassword
-      session.alpaca  = token.alpaca
       return session
     },
   },

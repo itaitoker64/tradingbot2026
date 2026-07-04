@@ -44,7 +44,10 @@ _ET = ZoneInfo("America/New_York")
 _AUDIT_FILE = Path(__file__).parents[2] / "logs" / "decisions.jsonl"
 
 # Runtime tuning file — written by the WeightTuner and the optimizer's Apply action.
-_WEIGHTS_FILE = Path(__file__).parents[1] / "data" / "strategy_weights.json"
+# Resolved through core.paths.data_dir() so every component (api_server, live
+# runner, agents) reads/writes the SAME file on volume-backed deploys.
+from core.paths import data_dir as _data_dir  # noqa: E402
+_WEIGHTS_FILE = _data_dir() / "strategy_weights.json"
 _TUNED_WEIGHTS_TTL = 60.0  # seconds between file re-reads in _live_weight()
 
 # Coarse correlation groups for the concentration cap. A symbol may belong to
@@ -82,9 +85,13 @@ class PortfolioManager:
         squeeze: Optional["SqueezeAgent"] = None,
         macro: Optional["MacroSignalAgent"] = None,
         decision_agent: Optional[DecisionAgent] = None,
+        persist_state: bool = False,
     ) -> None:
         self.settings = settings
         self.broker = broker
+        # Persist the daily kill-switch across restarts (live runners only;
+        # tests and ad-hoc constructions stay hermetic with the default False).
+        self._persist_state = persist_state
         self.fundamental = fundamental
         self.vision = vision
         self.technical = technical
@@ -179,7 +186,8 @@ class PortfolioManager:
             regime_rationale = getattr(self._regime, "rationale", "") if self._regime else ""
             vix_level = getattr(self._regime, "vix_level", None) if self._regime else None
             if vix_level is not None:
-                regime_rationale = f"{regime_rationale} | VIX={vix_level:.1f}"
+                vix_label = "VIXY(proxy)" if getattr(self._regime, "vix_is_proxy", False) else "VIX"
+                regime_rationale = f"{regime_rationale} | {vix_label}={vix_level:.1f}"
             all_evals = [ev for ev in evaluations if ev is not None]
             decision, composite, decision_meta = await self._decision_agent.decide(
                 ctx, all_evals, regime_value, regime_rationale,
@@ -236,10 +244,14 @@ class PortfolioManager:
 
         plan = self.risk.build_plan(ctx, intended=decision)
 
-        # VIX-aware position scaling: high volatility → smaller size
+        # VIX-aware position scaling: high volatility → smaller size.
+        # Applies ONLY to the real CBOE VIX index. When the regime detector had
+        # to fall back to the VIXY ETF *price* as a proxy, the number is on a
+        # completely different scale (VIXY ~$25-50 on a calm day) and would
+        # silently halve every position against these index-level cutoffs.
         if plan is not None and self._regime is not None:
             vix = self._regime.vix_level
-            if vix is not None:
+            if vix is not None and not getattr(self._regime, "vix_is_proxy", False):
                 if vix > 40:
                     plan.qty = float(int(plan.qty * 0.5))
                     logger.info("%s VIX=%.1f > 40: position scaled 50%%", ctx.ticker, vix)
@@ -294,12 +306,49 @@ class PortfolioManager:
             decision_meta=decision_meta,
         )
 
+    # Kill-switch state file: the daily baseline/halt must survive a mid-day
+    # restart (crash, broker toggle → session rebuild). In-memory-only state
+    # re-baselined at the post-loss equity, silently re-arming a fresh 3% of
+    # losses after every restart.
+    _KILL_SWITCH_FILE = _data_dir() / "kill_switch.json"
+
+    def _load_kill_switch_state(self, today: date) -> bool:
+        """Restore today's persisted kill-switch state. True if restored."""
+        if not self._persist_state:
+            return False
+        try:
+            raw = json.loads(self._KILL_SWITCH_FILE.read_text(encoding="utf-8"))
+            if raw.get("date") == today.isoformat() and float(raw.get("day_start_equity", 0)) > 0:
+                self._kill_switch_date = today
+                self._day_start_equity = float(raw["day_start_equity"])
+                self._intraday_peak_equity = float(raw.get("intraday_peak_equity")
+                                                   or raw["day_start_equity"])
+                self._halted = bool(raw.get("halted", False))
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _save_kill_switch_state(self) -> None:
+        if not self._persist_state:
+            return
+        try:
+            self._KILL_SWITCH_FILE.write_text(json.dumps({
+                "date": self._kill_switch_date.isoformat() if self._kill_switch_date else None,
+                "day_start_equity": self._day_start_equity,
+                "intraday_peak_equity": self._intraday_peak_equity,
+                "halted": self._halted,
+            }), encoding="utf-8")
+        except Exception:
+            logger.debug("kill switch state save failed", exc_info=True)
+
     def _check_daily_loss(self, account: dict) -> bool:
         """Update the kill switch from current equity. Returns True if halted.
 
         Tracks the first equity reading of each ET day as the baseline; once
         equity drops more than ``max_daily_loss_pct`` below it, all new entries
-        are blocked until the next trading day.
+        are blocked until the next trading day. State is persisted per day so
+        a restart cannot re-baseline away losses already taken.
         """
         equity = float(account.get("equity", 0.0) or 0.0)
         if equity <= 0:
@@ -307,11 +356,18 @@ class PortfolioManager:
 
         today = datetime.now(_ET).date()
         if self._kill_switch_date != today:
-            self._kill_switch_date = today
-            self._day_start_equity = equity
-            self._intraday_peak_equity = equity
-            self._halted = False
-            return False
+            # New day for this process — but prefer today's persisted state
+            # (set before a restart) over re-baselining at current equity.
+            if not self._load_kill_switch_state(today):
+                self._kill_switch_date = today
+                self._day_start_equity = equity
+                self._intraday_peak_equity = equity
+                self._halted = False
+                self._save_kill_switch_state()
+                return False
+
+        was_halted = self._halted
+        peak_before = self._intraday_peak_equity
 
         # From-open daily loss limit
         limit = self._day_start_equity * (1.0 - self.settings.risk.max_daily_loss_pct)
@@ -339,6 +395,8 @@ class PortfolioManager:
                     "— no new entries today",
                     equity, dd_pct * 100, self._intraday_peak_equity,
                 )
+        if self._halted != was_halted or self._intraday_peak_equity != peak_before:
+            self._save_kill_switch_state()
         return self._halted
 
     def _observe_positions(self, positions: Sequence[dict]) -> None:
@@ -481,11 +539,33 @@ class PortfolioManager:
                         return False
         return True
 
+    def _entry_window_open(self) -> bool:
+        """Wall-clock gate: new entries only Mon–Fri, 09:30 ET up to the EOD
+        flatten margin before the close.
+
+        Without this, a rescan or breakout evaluation between the 15:55 flatten
+        and 16:10 (the evaluation window's end) could open a fresh position
+        AFTER the book was flattened — an unmanaged overnight hold in a
+        day-trade-only bot. A market order after 16:00 would queue for the next
+        open, filling with day-TIF bracket legs already expired.
+        """
+        now = datetime.now(_ET)
+        if now.weekday() >= 5:
+            return False
+        open_t  = now.replace(hour=9, minute=30, second=0, microsecond=0)
+        close_t = now.replace(hour=16, minute=0, second=0, microsecond=0)
+        margin_min = self.settings.eod_flatten_min_before if self.settings.eod_flatten else 0
+        return open_t <= now < close_t - timedelta(minutes=margin_min)
+
     async def execute(self, decision: TradeDecision) -> Optional[OrderReceipt]:
         if not decision.is_actionable or self.broker is None:
             return None
         if self._halted:
             logger.warning("%s entry blocked: daily loss kill switch active", decision.ticker)
+            return None
+        if not self._entry_window_open():
+            logger.info("%s entry blocked: outside entry window "
+                        "(pre-open, post-flatten, or weekend)", decision.ticker)
             return None
         if not await self._entry_allowed(decision.ticker):
             return None

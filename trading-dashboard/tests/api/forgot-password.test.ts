@@ -41,12 +41,12 @@ describe('POST /api/auth/forgot-password', () => {
     expect(sendTemporaryPasswordEmail).not.toHaveBeenCalled()
   })
 
-  it('sets a temporary password and emails it when the user exists', async () => {
+  it('stores a TEMPORARY password without touching the real hash', async () => {
     vi.mocked(prisma.user.findFirst).mockResolvedValue({ id: 'user-1', email: 'real@example.com' } as any)
     vi.mocked(prisma.user.update).mockResolvedValue({} as any)
     vi.mocked(sendTemporaryPasswordEmail).mockResolvedValue(undefined)
 
-    const res = await POST(makeRequest({ email: 'real@example.com' }))
+    const res = await POST(makeRequest({ email: 'real-a@example.com' }))
     const data = await res.json()
 
     expect(res.status).toBe(200)
@@ -54,10 +54,13 @@ describe('POST /api/auth/forgot-password', () => {
 
     const updateArgs = vi.mocked(prisma.user.update).mock.calls[0][0] as any
     expect(updateArgs.where).toEqual({ id: 'user-1' })
-    expect(typeof updateArgs.data.passwordHash).toBe('string')
-    expect(updateArgs.data.mustChangePassword).toBe(true)
+    // The real credential must NOT be overwritten — an unauthenticated
+    // request that replaced passwordHash was an account-lockout DoS.
+    expect(updateArgs.data.passwordHash).toBeUndefined()
+    expect(typeof updateArgs.data.tempPasswordHash).toBe('string')
+    expect(updateArgs.data.tempPasswordAt).toBeInstanceOf(Date)
 
-    expect(sendTemporaryPasswordEmail).toHaveBeenCalledWith('real@example.com', expect.any(String))
+    expect(sendTemporaryPasswordEmail).toHaveBeenCalledWith('real-a@example.com', expect.any(String))
   })
 
   it('returns success even if sending the email fails', async () => {
@@ -65,10 +68,23 @@ describe('POST /api/auth/forgot-password', () => {
     vi.mocked(prisma.user.update).mockResolvedValue({} as any)
     vi.mocked(sendTemporaryPasswordEmail).mockRejectedValue(new Error('Brevo down'))
 
-    const res = await POST(makeRequest({ email: 'real@example.com' }))
+    const res = await POST(makeRequest({ email: 'real-b@example.com' }))
     const data = await res.json()
 
     expect(res.status).toBe(200)
     expect(data).toEqual({ success: true })
+  })
+
+  it('rate limits repeated requests for the same email', async () => {
+    vi.mocked(prisma.user.findFirst).mockResolvedValue({ id: 'user-1', email: 'real@example.com' } as any)
+    vi.mocked(prisma.user.update).mockResolvedValue({} as any)
+    vi.mocked(sendTemporaryPasswordEmail).mockResolvedValue(undefined)
+
+    for (let i = 0; i < 5; i++) {
+      const res = await POST(makeRequest({ email: 'victim@example.com' }))
+      expect(res.status).toBe(200)   // response never reveals throttling
+    }
+    // Only the first 3 requests inside the window may do any work.
+    expect(prisma.user.update).toHaveBeenCalledTimes(3)
   })
 })

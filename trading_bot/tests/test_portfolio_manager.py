@@ -403,3 +403,112 @@ def test_effective_thresholds_inactive_tuning_falls_back_to_config(tmp_path, mon
     # live_tuning_active is False → thresholds in file are NOT applied
     assert long_t == pm._thresholds.long_above
     assert short_t == pm._thresholds.short_below
+
+
+# ── entry window gate (no new entries post-flatten / off-hours) ─────────────
+
+def _freeze_pm_clock(monkeypatch, dt):
+    import execution.portfolio_manager as pm_mod
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt.astimezone(tz) if tz else dt
+
+    monkeypatch.setattr(pm_mod, "datetime", _Frozen)
+
+
+def test_entry_window_open_mid_session(monkeypatch):
+    pm = make_pm()
+    _freeze_pm_clock(monkeypatch, datetime(2026, 7, 1, 13, 0, tzinfo=_ET))  # Wed 13:00 ET
+    assert pm._entry_window_open() is True
+
+
+def test_entry_window_blocks_inside_flatten_margin(monkeypatch):
+    pm = make_pm()  # EOD_FLATTEN default on, 5-min margin → cutoff 15:55 ET
+    _freeze_pm_clock(monkeypatch, datetime(2026, 7, 1, 15, 57, tzinfo=_ET))
+    assert pm._entry_window_open() is False
+
+
+def test_entry_window_blocks_premarket_and_weekend(monkeypatch):
+    pm = make_pm()
+    _freeze_pm_clock(monkeypatch, datetime(2026, 7, 1, 9, 15, tzinfo=_ET))   # pre-open
+    assert pm._entry_window_open() is False
+    _freeze_pm_clock(monkeypatch, datetime(2026, 7, 4, 12, 0, tzinfo=_ET))   # Saturday
+    assert pm._entry_window_open() is False
+
+
+# ── kill-switch persistence across restarts ──────────────────────────────────
+
+def test_kill_switch_survives_restart(tmp_path, monkeypatch):
+    monkeypatch.setattr(PortfolioManager, "_KILL_SWITCH_FILE", tmp_path / "ks.json")
+    pm = make_pm()
+    pm._persist_state = True
+    pm._check_daily_loss({"equity": 100_000.0})           # baseline 100k
+    assert pm._check_daily_loss({"equity": 90_000.0}) is True   # -10% → halted
+
+    # "Restart": a fresh manager must restore today's baseline + halt, not
+    # re-anchor at the post-loss equity and re-arm a fresh 3% of losses.
+    pm2 = make_pm()
+    pm2._persist_state = True
+    assert pm2._check_daily_loss({"equity": 90_000.0}) is True
+    assert pm2._day_start_equity == pytest.approx(100_000.0)
+
+
+# ── VIX position scaling must ignore the VIXY price proxy ────────────────────
+
+def _mk_decide_pm(regime: RegimeSnapshot) -> PortfolioManager:
+    from core.models import AnalysisContext, RiskParameters  # noqa: F401
+
+    class _Stub:
+        def __init__(self, role, score):
+            self.role, self.score = role, score
+            self.data = None
+
+        async def safe_evaluate(self, ctx):
+            return AgentEvaluation(role=self.role, score=self.score, confidence=1.0)
+
+    class _StubRisk(_Stub):
+        def __init__(self):
+            super().__init__(AgentRole.RISK, 80)
+
+        def build_plan(self, ctx, *, intended):
+            from core.models import RiskParameters
+            return RiskParameters(qty=100.0, entry=100.0, stop_loss=98.0,
+                                  take_profit=106.0, risk_reward=3.0)
+
+    pm = PortfolioManager(
+        settings=Settings(),
+        broker=None,
+        fundamental=_Stub(AgentRole.FUNDAMENTAL, 70),
+        technical=_Stub(AgentRole.TECHNICAL, 70),
+        risk=_StubRisk(),
+    )
+    pm._regime = regime
+    return pm
+
+
+def _decide_qty(pm) -> float:
+    from core.models import AnalysisContext
+    ctx = AnalysisContext(ticker="TEST", bars=None, account={"equity": 100_000.0})
+    decision = asyncio.run(pm.decide(ctx))
+    assert decision.risk is not None
+    return decision.risk.qty
+
+
+def test_vix_scaling_applies_to_real_index():
+    snap = RegimeSnapshot(regime=MarketRegime.NEUTRAL, vix_level=45.0,
+                          spy_vs_vwap=None, spy_day_chg=None,
+                          qqq_vs_vwap=None, qqq_day_chg=None,
+                          rationale="test", vix_is_proxy=False)
+    assert _decide_qty(_mk_decide_pm(snap)) <= 55.0   # halved at VIX>40
+
+
+def test_vix_scaling_skips_vixy_proxy():
+    # VIXY at $45 is a normal reading of the ETF's PRICE, not a vol spike —
+    # the index-level cutoffs must not shrink the position.
+    snap = RegimeSnapshot(regime=MarketRegime.NEUTRAL, vix_level=45.0,
+                          spy_vs_vwap=None, spy_day_chg=None,
+                          qqq_vs_vwap=None, qqq_day_chg=None,
+                          rationale="test", vix_is_proxy=True)
+    assert _decide_qty(_mk_decide_pm(snap)) >= 100.0

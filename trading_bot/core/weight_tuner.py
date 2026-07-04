@@ -38,9 +38,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_WEIGHTS_FILE = Path(__file__).parent.parent / "data" / "strategy_weights.json"
+from core.paths import data_dir as _data_dir
+
+_WEIGHTS_FILE = _data_dir() / "strategy_weights.json"
 # Append-only log of every tuning step, so the learning can be visualised over time.
-_HISTORY_FILE = Path(__file__).parent.parent / "data" / "learning_history.jsonl"
+_HISTORY_FILE = _data_dir() / "learning_history.jsonl"
 _MIN_TRADES = 10    # don't tune until we have this many resolved outcomes
 _WINDOW = 30        # rolling window size
 _SKILL_SCALE = 2.0  # accuracy-to-multiplier scale: perfect → 2×, random → 1×, always-wrong → 0.1×
