@@ -143,6 +143,13 @@ _Decision          = None
 _EXIT_DECISIONS: list = []  # rolling log of exit-monitor and EOD review decisions
 _MAX_EXIT_LOG     = 500
 _telegram          = None   # TelegramPublisher — optional push notifications
+_bg_tasks: set     = set()  # keep references so GC doesn't collect running tasks
+
+def _fire(coro) -> None:
+    """Schedule a background coroutine and retain a reference to prevent GC."""
+    t = asyncio.create_task(coro)
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
 
 try:
     import pandas as pd
@@ -813,7 +820,7 @@ async def _check_and_close_trades(session: aiohttp.ClientSession) -> None:
                 changed_ids.add(_trade_key(trade))
                 _update_agent_attribution(trade)
                 if _telegram is not None:
-                    asyncio.create_task(_telegram.send_trade_exit(trade, exit_price, exit_reason, pnl))
+                    _fire(_telegram.send_trade_exit(trade, exit_price, exit_reason, pnl))
                 logger.info(
                     "Closed (simulated) %s %s via %s: exit=%.2f  PnL=$%.2f (%.2f%%)",
                     direction, ticker_sym, exit_reason, exit_price, pnl, pnl_pct,
@@ -875,7 +882,7 @@ async def _check_and_close_trades(session: aiohttp.ClientSession) -> None:
             changed_ids.add(_trade_key(trade))
             _update_agent_attribution(trade)
             if _telegram is not None:
-                asyncio.create_task(_telegram.send_trade_exit(trade, exit_price, exit_reason, pnl))
+                _fire(_telegram.send_trade_exit(trade, exit_price, exit_reason, pnl))
             logger.info("Closed %s %s via %s: exit=%.2f PnL=$%.2f (%.2f%%)",
                         direction, trade["ticker"], exit_reason, exit_price, pnl, pnl_pct)
 
@@ -1360,7 +1367,7 @@ async def _run_premarket_scan() -> None:
                 len(recs), gap_min, vol_min,
             )
             if _telegram is not None:
-                asyncio.create_task(_telegram.send_gapper_alert(recs))
+                _fire(_telegram.send_gapper_alert(recs))
 
     except Exception as exc:
         logger.warning("Pre-market scan failed: %s", exc)
@@ -1751,7 +1758,7 @@ async def _run_market_scan_inner(force: bool = False) -> None:
         if _telegram is not None and recs:
             strong_hits = [r for r in recs if r["composite_score"] > 60]
             if strong_hits:
-                asyncio.create_task(_telegram.send_strategy_alert(strong_hits))
+                _fire(_telegram.send_strategy_alert(strong_hits))
 
         scanned_n = len(symbols_raw)
         skipped_n = scanned_n - len(recs)
@@ -2078,7 +2085,7 @@ async def _trailing_stop_loop() -> None:
                             _close_simulated_trade(trade, effective_stop, "trailing_stop")
                             changed_ids.add(_trade_key(trade))
                             if _telegram is not None:
-                                asyncio.create_task(_telegram.send_trade_exit(trade, effective_stop, "trailing_stop", trade.get("pnl")))
+                                _fire(_telegram.send_trade_exit(trade, effective_stop, "trailing_stop", trade.get("pnl")))
                             logger.info("Trailing stop hit: %s LONG closed @ %.2f", ticker, effective_stop)
 
                     else:  # SHORT
@@ -2099,7 +2106,7 @@ async def _trailing_stop_loop() -> None:
                             _close_simulated_trade(trade, effective_stop, "trailing_stop")
                             changed_ids.add(_trade_key(trade))
                             if _telegram is not None:
-                                asyncio.create_task(_telegram.send_trade_exit(trade, effective_stop, "trailing_stop", trade.get("pnl")))
+                                _fire(_telegram.send_trade_exit(trade, effective_stop, "trailing_stop", trade.get("pnl")))
                             logger.info("Trailing stop hit: %s SHORT closed @ %.2f", ticker, effective_stop)
 
                 if changed_ids:
@@ -2222,7 +2229,7 @@ async def _do_exit_position(trade: dict, price: float, reason: str,
     _log_exit_decision(ticker, direction, "exit", reason, score=score, price=price)
     logger.info("Position EXIT: %s %s @ %.2f — %s", direction, ticker, price, reason)
     if _telegram is not None:
-        asyncio.create_task(_telegram.send_trade_exit(trade, price, reason))
+        _fire(_telegram.send_trade_exit(trade, price, reason))
     return True
 
 
@@ -2506,7 +2513,7 @@ async def _background_loop() -> None:
                     total_pnl = sum(t.get("pnl") or 0 for t in week_trades)
                     best  = max(week_trades, key=lambda t: t.get("pnl") or 0, default={})
                     worst = min(week_trades, key=lambda t: t.get("pnl") or 0, default={})
-                    asyncio.create_task(_telegram.send_weekly_summary({
+                    _fire(_telegram.send_weekly_summary({
                         "total_trades": len(week_trades),
                         "wins":         len(wins),
                         "losses":       len(losses),
@@ -3051,7 +3058,7 @@ async def execute_trade(body: ExecuteBody):
     if reason:
         raise HTTPException(status_code=409, detail=reason)
     if _telegram is not None and trade:
-        asyncio.create_task(_telegram.send_trade_entry(trade))
+        _fire(_telegram.send_trade_entry(trade))
     return {"status": "recorded", "trade_id": trade["id"]}
 
 
@@ -3209,7 +3216,7 @@ async def _run_auto_executor() -> int:
                 continue
             placed += 1
             if _telegram is not None and trade:
-                asyncio.create_task(_telegram.send_trade_entry(trade))
+                _fire(_telegram.send_trade_entry(trade))
             logger.info("Auto-exec PLACED %s %s x%d @ market (order %s, score %.1f)",
                         direction, ticker, qty, order_id, rec.get("composite_score") or 0.0)
     return placed
@@ -3649,6 +3656,12 @@ def health():
             "gemini":    gemini_set,
             "anthropic": anthropic_set,
             "vision_ready": gemini_set or anthropic_set,
+        },
+        "telegram": {
+            "enabled":          _telegram.enabled if _telegram is not None else False,
+            "has_bot_token":    bool(os.getenv("TELEGRAM_BOT_TOKEN")),
+            "has_dashboard_url": bool(os.getenv("DASHBOARD_URL")),
+            "has_bot_secret":   bool(os.getenv("BOT_API_SECRET")),
         },
         "issues": _health_issues(),
     }
