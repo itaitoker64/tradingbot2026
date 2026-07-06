@@ -9,7 +9,7 @@ import { RefreshButton }   from '@/components/layout/RefreshButton'
 import {
   demoStats, demoPnL, demoRegime, demoSectors,
 } from '@/lib/api'
-import { getAccount, getPositions, getPortfolioHistory, type AlpacaCreds } from '@/lib/alpaca'
+import { getAccount, getPositions, getPortfolioHistory, getOrders, tradesFromOrders, type AlpacaCreds } from '@/lib/alpaca'
 import { getAlpacaCreds } from '@/lib/session'
 import { botGet } from '@/lib/bot-api'
 import { computeSharpe, computeMaxDD } from '@/lib/stats'
@@ -18,10 +18,11 @@ import type { PortfolioStats, PnLPoint, RegimeInfo, SectorStat } from '@/types/t
 import type { AlpacaAccount } from '@/lib/alpaca'
 
 async function loadDashboard(creds: AlpacaCreds | null) {
-  const [account, positions, history, stats, regime, sectors, health, scanStats] = await Promise.allSettled([
+  const [account, positions, history, orders, stats, regime, sectors, health, scanStats] = await Promise.allSettled([
     creds ? getAccount(creds) : Promise.reject(new Error('no creds')),
     creds ? getPositions(creds) : Promise.reject(new Error('no creds')),
     creds ? getPortfolioHistory(creds, '1A', '1D') : Promise.reject(new Error('no creds')),
+    creds ? getOrders(creds, 'closed', 200) : Promise.reject(new Error('no creds')),
     botGet<PortfolioStats>('/api/stats'),
     creds ? computeRegime(creds) : Promise.reject(new Error('no creds')),
     botGet<SectorStat[]>('/api/sectors'),
@@ -73,6 +74,17 @@ async function loadDashboard(creds: AlpacaCreds | null) {
       if (sharpe !== null) resolvedStats.sharpe_ratio = sharpe
       const maxDD = computeMaxDD(pts)
       if (maxDD !== null) resolvedStats.max_drawdown = maxDD
+    }
+  }
+
+  // Win rate + trade count from Alpaca closed orders (bot default is 0)
+  if (orders.status === 'fulfilled' && orders.value.length > 0) {
+    const trades = tradesFromOrders(orders.value)
+    const closed = trades.filter(t => t.pnl != null)
+    if (closed.length > 0) {
+      const wins = closed.filter(t => (t.pnl ?? 0) > 0).length
+      resolvedStats.win_rate     = +(wins / closed.length * 100).toFixed(1)
+      resolvedStats.total_trades = closed.length
     }
   }
 

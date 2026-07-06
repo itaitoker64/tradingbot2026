@@ -97,6 +97,8 @@ export function LiveDashboard({
         if (!next.max_drawdown  && prev.max_drawdown)  next.max_drawdown  = prev.max_drawdown
         if (!next.total_pnl     && prev.total_pnl)     next.total_pnl     = prev.total_pnl
         if (!next.today_pnl     && prev.today_pnl)     next.today_pnl     = prev.today_pnl
+        if (!next.win_rate      && prev.win_rate)      next.win_rate      = prev.win_rate
+        if (!next.total_trades  && prev.total_trades)  next.total_trades  = prev.total_trades
         return next
       })
     }
