@@ -307,7 +307,7 @@ export default function TradesPage() {
               {buyingAll ? 'Buying...' : `Buy All (${active.length})`}
             </button>
           )}
-          <ScanButton />
+          <ScanButton onComplete={fetchData} />
           <button onClick={fetchData} className="btn-ghost text-xs" disabled={loading}>
             <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
           </button>

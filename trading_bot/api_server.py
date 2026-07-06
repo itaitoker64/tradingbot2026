@@ -244,9 +244,10 @@ _SECTOR_MAP: Dict[str, str] = {
 
 DATA_DIR    = (_VOLUME / "data") if _VOLUME else (_HERE / "data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-RECS_FILE     = DATA_DIR / "recommendations.json"
-SCAN_LOG_FILE = DATA_DIR / "scan_log.json"
-TRADES_FILE  = DATA_DIR / "trades.json"
+RECS_FILE       = DATA_DIR / "recommendations.json"
+SCAN_LOG_FILE   = DATA_DIR / "scan_log.json"
+TRADES_FILE     = DATA_DIR / "trades.json"
+SCAN_STATS_FILE = DATA_DIR / "scan_stats.json"
 HISTORY_FILE = TRADES_FILE                        # alias — executed trades = history
 PNL_FILE     = DATA_DIR / "pnl.json"
 CONTEXT_FILE = DATA_DIR / "context.json"
@@ -1733,11 +1734,7 @@ async def _run_market_scan_inner(force: bool = False) -> None:
                 r["hot_sector"] = r["sector"] in top_sectors
 
         recs.sort(key=lambda x: x["composite_score"], reverse=True)
-        if recs:
-            _save(RECS_FILE, recs)
-        # If scan produced nothing, keep whatever is on disk.
-        # Revalidation prunes stale recs during market hours;
-        # EOD extension (in _background_loop) keeps valid ones visible overnight.
+        _save(RECS_FILE, recs)
         _save(SCAN_LOG_FILE, {
             "picked":     recs,
             "rejected":   rejected,

@@ -8,7 +8,7 @@ type State = 'idle' | 'scanning' | 'done' | 'error'
 /** Manually trigger a market scan on the bot, then refresh once it completes.
  *  The scan runs in the background on the bot, so we poll scan-stats'
  *  last_scan_at until it advances (up to ~90s) before refreshing the page. */
-export function ScanButton() {
+export function ScanButton({ onComplete }: { onComplete?: () => void } = {}) {
   const router = useRouter()
   const [state, setState] = useState<State>('idle')
 
@@ -41,12 +41,14 @@ export function ScanButton() {
       if (now && now !== before) {
         setState('done')
         router.refresh()
+        onComplete?.()
         setTimeout(() => setState('idle'), 2500)
         return
       }
     }
     // Timed out waiting — refresh anyway so any partial results show.
     router.refresh()
+    onComplete?.()
     setState('idle')
   }
 

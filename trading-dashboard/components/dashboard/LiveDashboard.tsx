@@ -171,7 +171,11 @@ export function LiveDashboard({
             {scanStats.market_open ? 'Market Open' : 'Market Closed'}
           </span>
           {scanStats.last_scan_at && (
-            <span>Last scan: <span className="text-subtle">{relativeTime(scanStats.last_scan_at)}</span></span>
+            <span>Last scan: <span className="text-subtle">
+              {relativeTime(scanStats.last_scan_at)}
+              {' '}
+              <span className="text-muted">({new Date(scanStats.last_scan_at + (scanStats.last_scan_at.endsWith('Z') ? '' : 'Z')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})</span>
+            </span></span>
           )}
           <span>Scans today: <span className="text-subtle">{scanStats.scans_today ?? '—'}</span></span>
           <span>Tickers scanned: <span className="text-subtle">{scanStats.tickers_scanned ?? '—'}</span></span>
