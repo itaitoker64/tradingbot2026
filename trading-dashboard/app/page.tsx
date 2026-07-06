@@ -18,12 +18,11 @@ import type { PortfolioStats, PnLPoint, RegimeInfo, SectorStat } from '@/types/t
 import type { AlpacaAccount } from '@/lib/alpaca'
 
 async function loadDashboard(creds: AlpacaCreds | null) {
-  const [account, positions, history, stats, pnl, regime, sectors, health, scanStats] = await Promise.allSettled([
+  const [account, positions, history, stats, regime, sectors, health, scanStats] = await Promise.allSettled([
     creds ? getAccount(creds) : Promise.reject(new Error('no creds')),
     creds ? getPositions(creds) : Promise.reject(new Error('no creds')),
     creds ? getPortfolioHistory(creds, '1A', '1D') : Promise.reject(new Error('no creds')),
     botGet<PortfolioStats>('/api/stats'),
-    botGet<PnLPoint[]>('/api/pnl'),
     creds ? computeRegime(creds) : Promise.reject(new Error('no creds')),
     botGet<SectorStat[]>('/api/sectors'),
     botGet<{ trading?: { mode_label?: string; execute_live?: boolean; paper_mode?: boolean }; issues?: HealthIssue[] }>('/api/health'),
@@ -53,24 +52,28 @@ async function loadDashboard(creds: AlpacaCreds | null) {
     resolvedStats.open_positions = positions.value.length
   }
 
-  // Compute Sharpe + Max DD from Alpaca equity curve (overrides bot's 0 default)
+  // Build chart data + Sharpe/MaxDD from Alpaca history (no bot dependency)
+  let resolvedPnl: PnLPoint[] = demoPnL()
   if (history.status === 'fulfilled') {
     const hist = history.value
-    const pnlPoints: PnLPoint[] = (hist.timestamp ?? [])
+    const base = hist.base_value || hist.equity?.find((e: number) => e > 0) || 0
+    const pts: PnLPoint[] = (hist.timestamp ?? [])
       .map((ts: number, i: number) => ({
         date:           new Date(ts * 1000).toISOString().slice(0, 10),
-        daily_pnl:      +(hist.profit_loss?.[i] ?? 0),
-        cumulative_pnl: 0,
+        daily_pnl:      +(hist.profit_loss?.[i] ?? 0).toFixed(2),
+        cumulative_pnl: base > 0 ? +((hist.equity?.[i] ?? 0) - base).toFixed(2) : +(hist.profit_loss?.[i] ?? 0).toFixed(2),
         trade_count:    0,
-        equity:         +(hist.equity?.[i] ?? 0),
+        equity:         +(hist.equity?.[i] ?? 0).toFixed(2),
       }))
       .filter((p: PnLPoint) => (p.equity ?? 0) > 0)
 
-    const sharpe = computeSharpe(pnlPoints)
-    if (sharpe !== null) resolvedStats.sharpe_ratio = sharpe
-
-    const maxDD = computeMaxDD(pnlPoints)
-    if (maxDD !== null) resolvedStats.max_drawdown = maxDD
+    if (pts.length > 0) {
+      resolvedPnl = pts
+      const sharpe = computeSharpe(pts)
+      if (sharpe !== null) resolvedStats.sharpe_ratio = sharpe
+      const maxDD = computeMaxDD(pts)
+      if (maxDD !== null) resolvedStats.max_drawdown = maxDD
+    }
   }
 
   const tradingMode = health.status === 'fulfilled'
@@ -85,7 +88,7 @@ async function loadDashboard(creds: AlpacaCreds | null) {
     stats:         resolvedStats,
     account:       account.status === 'fulfilled' ? account.value : null as AlpacaAccount | null,
     accountError:  accountErrorDetail,
-    pnl:           pnl.status       === 'fulfilled' ? pnl.value       : demoPnL(),
+    pnl:           resolvedPnl,
     regime:        regime.status    === 'fulfilled' ? regime.value    : demoRegime(),
     sectors:       sectors.status   === 'fulfilled' ? sectors.value   : demoSectors(),
     positions:     positions.status === 'fulfilled' ? positions.value : [],
