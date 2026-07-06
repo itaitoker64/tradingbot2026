@@ -11,7 +11,11 @@ import { cn } from '@/lib/utils'
  * Writes to the bot server's /api/trade-mode, which live_runner reads each
  * scan — the switch takes effect within one cycle, no redeploy.
  */
-export function ExecutionModeToggle() {
+interface Props {
+  onToggle?: (auto: boolean) => void
+}
+
+export function ExecutionModeToggle({ onToggle }: Props) {
   const [auto,    setAuto]    = useState<boolean | null>(null)
   const [saving,  setSaving]  = useState(false)
 
@@ -28,7 +32,7 @@ export function ExecutionModeToggle() {
     if (saving || next === auto) return
     setSaving(true)
     const prev = auto
-    setAuto(next)  // optimistic
+    setAuto(next)
     try {
       const res = await fetch('/api/trade-mode', {
         method:  'POST',
@@ -36,14 +40,15 @@ export function ExecutionModeToggle() {
         body:    JSON.stringify({ auto_execute: next }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      onToggle?.(next)
       toast.success(next ? 'Auto-execute ON' : 'Manual approval ON', {
         description: next
-          ? 'The bot will place buy/sell orders by itself.'
-          : 'The bot will only suggest trades — you approve each one.',
+          ? 'New recommendations will be executed automatically.'
+          : 'You approve each trade manually.',
       })
     } catch (err: any) {
-      setAuto(prev)  // rollback
-      toast.error('Could not change mode', { description: err?.message || 'Bot offline' })
+      setAuto(prev)
+      toast.error('Could not change mode', { description: err?.message || 'Server error' })
     } finally {
       setSaving(false)
     }

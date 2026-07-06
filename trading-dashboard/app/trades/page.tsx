@@ -75,7 +75,6 @@ function tradeKey(t: TradeRecommendation): string {
 
 export default function TradesPage() {
 
-
   const [selected,     setSelected]     = useState<TradeRecommendation | null>(null)
   const [infoTrade,    setInfoTrade]    = useState<TradeRecommendation | null>(null)
   const [filter,       setFilter]       = useState<'all' | 'LONG' | 'SHORT'>('all')
@@ -91,13 +90,24 @@ export default function TradesPage() {
   const [executedRecs, setExecutedRecs] = useState<TradeRecommendation[]>([])
   const [showExecuted, setShowExecuted] = useState(false)
   const [buyingAll,    setBuyingAll]    = useState(false)
+  const [autoMode,     setAutoMode]     = useState<boolean>(false)
 
-  const tradesRef = useRef<TradeRecommendation[]>([])
-  tradesRef.current = trades
+  const tradesRef  = useRef<TradeRecommendation[]>([])
+  const autoModeRef = useRef<boolean>(false)
+  tradesRef.current  = trades
+  autoModeRef.current = autoMode
 
   useEffect(() => {
     setExecutedIds(loadIds())
     setExecutedRecs(loadExecRecs())
+  }, [])
+
+  // Load this user's auto-execute preference from DB on mount
+  useEffect(() => {
+    fetch('/api/trade-mode', { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : { auto_execute: false })
+      .then(d => setAutoMode(!!d.auto_execute))
+      .catch(() => {})
   }, [])
 
   const fetchPrices = useCallback(async (recs: TradeRecommendation[]) => {
@@ -114,6 +124,82 @@ export default function TradesPage() {
       setPrices(map)
     } catch { /* offline */ }
   }, [])
+
+  /** Execute a list of trades, respecting position limits. Returns count placed. */
+  async function executeTrades(list: TradeRecommendation[]): Promise<number> {
+    if (!list.length) return 0
+
+    let tradesToExecute = list
+    try {
+      const ssRes = await fetch('/api/bot/scan-stats', { cache: 'no-store' })
+      if (ssRes.ok) {
+        const ss = await ssRes.json()
+        const openPos = ss.open_positions ?? 0
+        const maxPos  = ss.max_positions  ?? Infinity
+        if (openPos >= maxPos) {
+          toast.error('Position limit reached', {
+            description: `Already at max positions (${openPos}/${maxPos}). No new trades.`,
+          })
+          return 0
+        }
+        const slots = maxPos - openPos
+        if (slots < tradesToExecute.length) {
+          tradesToExecute = tradesToExecute.slice(0, slots)
+          toast.info(`Position cap: executing only ${slots} of ${list.length} trades`, {
+            description: `${openPos} open, max ${maxPos}`,
+          })
+        }
+      }
+    } catch { /* proceed if scan-stats unavailable */ }
+
+    let succeeded = 0
+    let failed    = 0
+    for (const trade of tradesToExecute) {
+      try {
+        const res = await api.execute({
+          recommendation_id: trade.id,
+          ticker:          trade.ticker,
+          direction:       trade.direction,
+          qty:             trade.risk.qty,
+          entry:           trade.risk.entry,
+          stop_loss:       trade.risk.stop_loss,
+          take_profit:     trade.risk.take_profit,
+          composite_score: trade.composite_score,
+          rationale:       trade.rationale,
+        })
+        const newIds = new Set(loadIds()).add(tradeKey(trade))
+        setExecutedIds(newIds)
+        saveIds(newIds)
+        const newRecs = [trade, ...loadExecRecs()]
+        saveExecRecs(newRecs)
+        setExecutedRecs(newRecs)
+        succeeded++
+        toast.success(`${trade.direction} ${trade.ticker}`, {
+          description: `${res.qty} shares @ ${trade.risk.entry}`,
+        })
+      } catch (err: any) {
+        if (err?.status === 409) {
+          const newIds = new Set(loadIds()).add(tradeKey(trade))
+          setExecutedIds(newIds)
+          saveIds(newIds)
+          toast.info(`${trade.ticker} already submitted`, { description: 'Skipped duplicate within 30s' })
+        } else if (err?.status === 422) {
+          failed++
+          toast.error(`${trade.ticker} skipped`, { description: err.message })
+        } else {
+          failed++
+          toast.error(`Failed: ${trade.ticker}`, { description: err?.message || undefined })
+        }
+      }
+    }
+    setShowExecuted(true)
+    if (succeeded > 0 && list.length > 1) {
+      toast.success(`Bought ${succeeded} trade${succeeded > 1 ? 's' : ''}`, {
+        description: failed > 0 ? `${failed} failed` : undefined,
+      })
+    }
+    return succeeded
+  }
 
   const fetchData = useCallback(async () => {
     setLoading(true)
@@ -141,13 +227,20 @@ export default function TradesPage() {
         })
       }
       fetchPrices(newRecs)
+
+      // Auto-execute unexecuted recommendations for this user if mode is AUTO
+      if (autoModeRef.current) {
+        const currentIds = loadIds()
+        const toExec = newRecs.filter(t => !currentIds.has(tradeKey(t)))
+        if (toExec.length > 0) executeTrades(toExec)
+      }
     } catch {
       setLive(false)
     } finally {
       setLoading(false)
       setLastFetch(new Date())
     }
-  }, [fetchPrices])
+  }, [fetchPrices]) // eslint-disable-line react-hooks/exhaustive-deps
 
   usePolling(fetchData, REFRESH_MS)
   usePolling(() => fetchPrices(tradesRef.current), PRICE_MS)
@@ -155,81 +248,8 @@ export default function TradesPage() {
   async function handleBuyAll() {
     if (!active.length || buyingAll) return
     setBuyingAll(true)
-
-    // Pre-flight: check open position count vs. max
-    let tradesToExecute = active
-    try {
-      const ssRes = await fetch('/api/bot/scan-stats', { cache: 'no-store' })
-      if (ssRes.ok) {
-        const ss = await ssRes.json()
-        const openPos = ss.open_positions ?? 0
-        const maxPos  = ss.max_positions  ?? Infinity
-        if (openPos >= maxPos) {
-          toast.error('Position limit reached', {
-            description: `Already at max positions (${openPos}/${maxPos}). No new trades.`,
-          })
-          setBuyingAll(false)
-          return
-        }
-        const slots = maxPos - openPos
-        if (slots < tradesToExecute.length) {
-          tradesToExecute = tradesToExecute.slice(0, slots)
-          toast.info(`Position cap: executing only ${slots} of ${active.length} trades`, {
-            description: `${openPos} open, max ${maxPos}`,
-          })
-        }
-      }
-    } catch { /* if scan-stats unavailable, proceed with all */ }
-
-    let succeeded = 0
-    let failed    = 0
-    for (const trade of tradesToExecute) {
-      try {
-        const res = await api.execute({
-          recommendation_id: trade.id,
-          ticker:          trade.ticker,
-          direction:       trade.direction,
-          qty:             trade.risk.qty,
-          entry:           trade.risk.entry,
-          stop_loss:       trade.risk.stop_loss,
-          take_profit:     trade.risk.take_profit,
-          composite_score: trade.composite_score,
-          rationale:       trade.rationale,
-        })
-        const newIds = new Set(executedIds).add(tradeKey(trade))
-        setExecutedIds(newIds)
-        saveIds(newIds)
-        const newRecs = [trade, ...loadExecRecs()]
-        saveExecRecs(newRecs)
-        setExecutedRecs(newRecs)
-        succeeded++
-        toast.success(`${trade.direction} ${trade.ticker}`, {
-          description: `${res.qty} shares @ ${trade.risk.entry}`,
-        })
-      } catch (err: any) {
-        if (err?.status === 409) {
-          // Idempotency dedup — already submitted within 30s, mark as executed
-          const newIds = new Set(executedIds).add(tradeKey(trade))
-          setExecutedIds(newIds)
-          saveIds(newIds)
-          toast.info(`${trade.ticker} already submitted`, { description: 'Skipped duplicate within 30s' })
-        } else if (err?.status === 422) {
-          // Account too small to size this trade — skip, not a hard failure
-          failed++
-          toast.error(`${trade.ticker} skipped`, { description: err.message })
-        } else {
-          failed++
-          toast.error(`Failed: ${trade.ticker}`, { description: err?.message || undefined })
-        }
-      }
-    }
+    await executeTrades(active)
     setBuyingAll(false)
-    setShowExecuted(true)
-    if (succeeded > 0) {
-      toast.success(`Bought all — ${succeeded} trade${succeeded > 1 ? 's' : ''} submitted`, {
-        description: failed > 0 ? `${failed} failed` : undefined,
-      })
-    }
   }
 
   function handleExecuted(trade: TradeRecommendation) {
@@ -274,7 +294,7 @@ export default function TradesPage() {
           {/* Execution venue: Alpaca vs IBKR */}
           <BrokerModeToggle />
           {/* Execution mode: manual approval vs auto-execute */}
-          <ExecutionModeToggle />
+          <ExecutionModeToggle onToggle={next => setAutoMode(next)} />
           {/* Filter pills */}
           <div className="flex items-center gap-1 rounded-lg border border-bg-border p-0.5">
             {(['all', 'LONG', 'SHORT'] as const).map(f => (
