@@ -115,6 +115,7 @@ export interface ExecuteRequest {
   stop_loss:         number
   take_profit:       number
   composite_score?:  number
+  rationale?:        string
 }
 
 export interface ExecuteResponse {

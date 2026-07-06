@@ -170,6 +170,8 @@ try:
     _telegram = _TelegramPublisher(
         bot_token=_settings.telegram_bot_token,
     )
+    if not os.getenv("DASHBOARD_URL"):
+        logger.warning("DASHBOARD_URL not set — Telegram trade notifications will be silently disabled")
     logger.info("Agent pipeline loaded via bootstrap.build_manager — unified with live/backtest")
 
 except Exception as _import_err:
@@ -810,6 +812,8 @@ async def _check_and_close_trades(session: aiohttp.ClientSession) -> None:
                 trade["closed_at"]   = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
                 changed_ids.add(_trade_key(trade))
                 _update_agent_attribution(trade)
+                if _telegram is not None:
+                    asyncio.create_task(_telegram.send_trade_exit(trade, exit_price, exit_reason, pnl))
                 logger.info(
                     "Closed (simulated) %s %s via %s: exit=%.2f  PnL=$%.2f (%.2f%%)",
                     direction, ticker_sym, exit_reason, exit_price, pnl, pnl_pct,
@@ -870,6 +874,8 @@ async def _check_and_close_trades(session: aiohttp.ClientSession) -> None:
             trade["closed_at"]   = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
             changed_ids.add(_trade_key(trade))
             _update_agent_attribution(trade)
+            if _telegram is not None:
+                asyncio.create_task(_telegram.send_trade_exit(trade, exit_price, exit_reason, pnl))
             logger.info("Closed %s %s via %s: exit=%.2f PnL=$%.2f (%.2f%%)",
                         direction, trade["ticker"], exit_reason, exit_price, pnl, pnl_pct)
 
@@ -2071,6 +2077,8 @@ async def _trailing_stop_loop() -> None:
                         if price <= effective_stop:
                             _close_simulated_trade(trade, effective_stop, "trailing_stop")
                             changed_ids.add(_trade_key(trade))
+                            if _telegram is not None:
+                                asyncio.create_task(_telegram.send_trade_exit(trade, effective_stop, "trailing_stop", trade.get("pnl")))
                             logger.info("Trailing stop hit: %s LONG closed @ %.2f", ticker, effective_stop)
 
                     else:  # SHORT
@@ -2090,6 +2098,8 @@ async def _trailing_stop_loop() -> None:
                         if price >= effective_stop:
                             _close_simulated_trade(trade, effective_stop, "trailing_stop")
                             changed_ids.add(_trade_key(trade))
+                            if _telegram is not None:
+                                asyncio.create_task(_telegram.send_trade_exit(trade, effective_stop, "trailing_stop", trade.get("pnl")))
                             logger.info("Trailing stop hit: %s SHORT closed @ %.2f", ticker, effective_stop)
 
                 if changed_ids:
@@ -2878,6 +2888,7 @@ class ExecuteBody(BaseModel):
     score:             Optional[float] = None
     evaluations:       Optional[list] = None
     beta:              Optional[float] = None
+    rationale:         Optional[str] = None
 
 
 @app.get("/api/open", dependencies=[Depends(_verify_bot_secret)])
@@ -2988,6 +2999,7 @@ async def _record_executed_trade(body: ExecuteBody) -> tuple[Optional[str], Opti
             "evaluations":     body.evaluations or [],
             "beta":            body.beta or 1.0,
             "regime":          _load(REGIME_FILE, {}).get("regime", "unknown"),
+            "rationale":       body.rationale or "",
         }
         history.append(trade)
         _save(HISTORY_FILE, history)
@@ -3188,13 +3200,16 @@ async def _run_auto_executor() -> int:
                 recommendation_id=rec.get("id"), order_id=order_id,
                 composite_score=rec.get("composite_score"),
                 evaluations=rec.get("evaluations"), beta=rec.get("beta"),
+                rationale=rec.get("rationale"),
             )
-            rej, _ = await _record_executed_trade(body)
+            rej, trade = await _record_executed_trade(body)
             if rej:
                 logger.warning("Auto-exec: order %s placed for %s but record rejected "
                                "(%s) — orphaned bracket", order_id, ticker, rej)
                 continue
             placed += 1
+            if _telegram is not None and trade:
+                asyncio.create_task(_telegram.send_trade_entry(trade))
             logger.info("Auto-exec PLACED %s %s x%d @ market (order %s, score %.1f)",
                         direction, ticker, qty, order_id, rec.get("composite_score") or 0.0)
     return placed

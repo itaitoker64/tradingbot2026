@@ -69,6 +69,7 @@ export function ConfirmModal({ trade, onClose, onDone }: Props) {
         stop_loss:       trade.risk.stop_loss,
         take_profit:     trade.risk.take_profit,
         composite_score: trade.composite_score,
+        rationale:       trade.rationale,
       })
       setConfirmed(true)
       toast.success(`Trade executed: ${trade.direction} ${res.qty}x ${trade.ticker}`, {

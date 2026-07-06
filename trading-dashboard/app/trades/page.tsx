@@ -194,6 +194,7 @@ export default function TradesPage() {
           stop_loss:       trade.risk.stop_loss,
           take_profit:     trade.risk.take_profit,
           composite_score: trade.composite_score,
+          rationale:       trade.rationale,
         })
         const newIds = new Set(executedIds).add(tradeKey(trade))
         setExecutedIds(newIds)
