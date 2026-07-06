@@ -2,12 +2,10 @@
  * GET  /api/trade-mode  → current execution mode { auto_execute }
  * POST /api/trade-mode  → toggle auto-execute { auto_execute: boolean }
  *
- * The BOT's file is the source of truth for what the bot actually does — it
- * is shared state, not per-user state. GET is strictly read-only: the old
- * behaviour of syncing the requesting user's personal DB value to the bot on
- * every page load let ANY signed-in account silently overwrite the shared
- * toggle (user B loading the dashboard disarmed — or armed — the bot user A
- * configured). Only an explicit POST may change the bot.
+ * The DB is the source of truth for the user's preference — it survives bot
+ * restarts on Railway. On GET we return the DB value and, if the bot is
+ * online but disagrees (e.g. it just restarted and lost trade_mode.json),
+ * we silently re-sync it so the bot catches up without a user action.
  */
 import { NextResponse } from 'next/server'
 import { auth } from '@/auth'
@@ -20,17 +18,22 @@ export async function GET() {
   const session = await auth()
   if (!session?.user?.id) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  try {
-    const data = await botGet<{ auto_execute?: boolean }>('/api/trade-mode')
-    return NextResponse.json({ auto_execute: !!data.auto_execute })
-  } catch {
-    // Bot offline — fall back to this user's stored preference for display only.
-    const user = await prisma.user.findUnique({
-      where:  { id: session.user.id },
-      select: { autoExecute: true },
+  const user = await prisma.user.findUnique({
+    where:  { id: session.user.id },
+    select: { autoExecute: true },
+  })
+  const autoExecute = user?.autoExecute ?? false
+
+  // Re-sync the bot if it has drifted (e.g. after a Railway restart).
+  botGet<{ auto_execute?: boolean }>('/api/trade-mode')
+    .then(data => {
+      if (!!data.auto_execute !== autoExecute) {
+        botPost('/api/trade-mode', { auto_execute: autoExecute }).catch(() => {})
+      }
     })
-    return NextResponse.json({ auto_execute: user?.autoExecute ?? false, bot_offline: true })
-  }
+    .catch(() => {})
+
+  return NextResponse.json({ auto_execute: autoExecute })
 }
 
 export async function POST(req: Request) {
